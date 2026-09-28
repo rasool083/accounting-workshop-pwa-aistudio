@@ -1,0 +1,51 @@
+{
+  "mode": "diagnostic-dry-run-no-value-conversion",
+  "defaultCurrency": "IRT",
+  "defaultCurrencyLabel": "تومان",
+  "hypotheticalConversion": "IRT values unchanged; IRR↔IRT conversion not applied",
+  "before": {
+    "checksum": "4359a60c",
+    "backupChecksum": "ebf75e46",
+    "recordCounts": {
+      "products": 3,
+      "invoices": 2,
+      "invoiceItems": 2,
+      "priceHistory": 2,
+      "transactions": 1,
+      "checks": 1,
+      "accounts": 2,
+      "purchasePayments": 1,
+      "issuedChecks": 0,
+      "cashEvents": 2,
+      "inventoryEvents": 3,
+      "payrollRecords": 0
+    },
+    "monetaryFieldCount": 22,
+    "monetaryTotal": 419290000
+  },
+  "after": {
+    "checksum": "4359a60c",
+    "recordCounts": {
+      "products": 3,
+      "invoices": 2,
+      "invoiceItems": 2,
+      "priceHistory": 2,
+      "transactions": 1,
+      "checks": 1,
+      "accounts": 2,
+      "purchasePayments": 1,
+      "issuedChecks": 0,
+      "cashEvents": 2,
+      "inventoryEvents": 3,
+      "payrollRecords": 0
+    },
+    "monetaryFieldCount": 22,
+    "monetaryTotal": 419290000
+  },
+  "invariants": {
+    "sameMonetaryPaths": true,
+    "sameMonetaryValues": true,
+    "sameRecordCounts": true,
+    "noValueConversion": true
+  }
+}

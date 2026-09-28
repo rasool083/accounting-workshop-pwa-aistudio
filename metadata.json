@@ -1,0 +1,7 @@
+{
+  "name": "حسابداری کارگاه | دفتر هوشمند",
+  "description": "دفتر هوشمند و محلی حسابداری کارگاه",
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

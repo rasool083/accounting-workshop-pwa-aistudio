@@ -1,0 +1,123 @@
+/* Shared responsive UI corrections for the workshop accounting PWA. */
+
+:root {
+  --ui-modal-width: min(560px, calc(100vw - 24px));
+  --ui-modal-radius: 18px;
+  --ui-overlay: rgb(15 23 42 / 56%);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body, #root { min-height: 100%; }
+body { overflow-x: hidden; }
+button, input, select, textarea { max-width: 100%; }
+
+/* Any application modal must be a centered overlay, never a side drawer. */
+[class*="modal-overlay"],
+[class*="dialog-overlay"],
+[class*="overlay"].modal,
+.modal-backdrop,
+.dialog-backdrop,
+[data-modal-overlay="true"] {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 2000 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 12px !important;
+  overflow: auto !important;
+  background: var(--ui-overlay) !important;
+}
+
+[class*="modal-content"],
+[class*="dialog-content"],
+.modal-content,
+.dialog-content,
+.modal-panel,
+.dialog-panel,
+[data-modal="true"] {
+  position: relative !important;
+  inset: auto !important;
+  transform: none !important;
+  box-sizing: border-box !important;
+  width: var(--ui-modal-width) !important;
+  max-width: 560px !important;
+  max-height: calc(100dvh - 24px) !important;
+  margin: auto !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  border-radius: var(--ui-modal-radius) !important;
+}
+
+/* Prevent an existing right/left panel implementation from escaping the viewport. */
+[class*="drawer"],
+[class*="sheet"],
+[data-side-panel="true"] {
+  max-width: min(560px, calc(100vw - 24px)) !important;
+}
+
+@media (max-width: 640px) {
+  :root { --ui-modal-radius: 14px; }
+
+  [class*="modal-content"],
+  [class*="dialog-content"],
+  .modal-content,
+  .dialog-content,
+  .modal-panel,
+  .dialog-panel,
+  [data-modal="true"] {
+    width: min(430px, calc(100vw - 16px)) !important;
+    max-height: calc(100dvh - 16px) !important;
+    border-radius: var(--ui-modal-radius) !important;
+  }
+
+  [class*="modal"] form,
+  [class*="dialog"] form,
+  .modal-panel form,
+  .dialog-panel form {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 10px !important;
+  }
+
+  [class*="modal"] input,
+  [class*="modal"] select,
+  [class*="modal"] textarea,
+  [class*="dialog"] input,
+  [class*="dialog"] select,
+  [class*="dialog"] textarea {
+    min-width: 0 !important;
+    width: 100% !important;
+  }
+
+  table {
+    display: block !important;
+    max-width: 100% !important;
+    overflow-x: auto !important;
+    white-space: nowrap !important;
+  }
+}
+
+/* Consistent visual states for check and transaction rows. */
+tr.status-success, .status-success-row, [data-transaction-kind="receipt"] {
+  background: rgb(22 163 74 / 9%) !important;
+}
+tr.status-danger, .status-danger-row, [data-check-returned="true"] {
+  background: rgb(220 38 38 / 10%) !important;
+}
+tr.status-warning, .status-warning-row, [data-transaction-kind="payment"] {
+  background: rgb(234 179 8 / 11%) !important;
+}
+
+/* Compact, consistent controls and readable Persian text. */
+.modal-content h2, .modal-content h3, .dialog-content h2, .dialog-content h3 {
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.modal-content label, .dialog-content label { line-height: 1.7; }
+.modal-content .actions, .dialog-content .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-start;
+}
