@@ -1,14 +1,25 @@
-const CACHE_NAME = "accounting-workshop-pwa-aistudio-v1";
+const CACHE_NAME = "accounting-workshop-pwa-aistudio-v2";
 const BASE = self.registration.scope;
 const APP_SHELL = [
   BASE,
   new URL("manifest.webmanifest", BASE).toString(),
+  new URL("icon-192.png", BASE).toString(),
+  new URL("icon-512.png", BASE).toString(),
+  new URL("icon-maskable-512.png", BASE).toString(),
+  new URL("apple-touch-icon.png", BASE).toString(),
+  new URL("favicon.png", BASE).toString(),
   new URL("icon-192.svg", BASE).toString(),
   new URL("icon-512.svg", BASE).toString(),
 ];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) =>
+      cache.addAll(APP_SHELL).catch((err) => {
+        console.warn("[SW] Cache addAll warning:", err);
+      }),
+    ),
+  );
   self.skipWaiting();
 });
 

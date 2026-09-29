@@ -145,6 +145,7 @@ import {
   type LocalSecuritySettings,
 } from "@/lib/security";
 import VendorDirectory from "@/pages/VendorDirectory";
+import { PWAInstallButton } from "@/components/PWAInstallButton";
 
 const iconMap = {
   "layout-dashboard": LayoutDashboard,
@@ -1108,6 +1109,7 @@ export default function Home() {
             </div>
           </div>
           <div className="topbar-actions">
+            <PWAInstallButton />
             <div className="save-indicator">
               <span />
               <span>ذخیره خودکار فعال</span>

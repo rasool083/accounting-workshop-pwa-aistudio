@@ -4,10 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
     <meta name="theme-color" content="#142d31" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="حسابداری کارگاه" />
     <meta name="description" content="دفتر هوشمند و محلی حسابداری کارگاه" />
     <meta property="og:title" content="حسابداری کارگاه | دفتر هوشمند" />
     <meta property="og:description" content="دفتر هوشمند و محلی حسابداری کارگاه" />
     <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png" />
+    <link rel="icon" type="image/png" sizes="64x64" href="./favicon.png" />
     <link rel="icon" href="./icon-192.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -18,7 +25,11 @@
     <div id="root"></div>
     <script>
       if ("serviceWorker" in navigator) {
-        window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js"));
+        window.addEventListener("load", () => {
+          navigator.serviceWorker.register("./sw.js", { scope: "./" }).catch((err) => {
+            console.warn("[SW] Registration failed:", err);
+          });
+        });
       }
     </script>
     <script type="module" src="/src/main.tsx"></script>
