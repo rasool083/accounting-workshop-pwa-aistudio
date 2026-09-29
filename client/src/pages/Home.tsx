@@ -1595,6 +1595,10 @@ function Invoices({
   const [invoiceSortDirection, setInvoiceSortDirection] = useState<
     "asc" | "desc"
   >("desc");
+  const [invoicePartyFilter, setInvoicePartyFilter] = useState("همه");
+  const [invoiceTypeFilter, setInvoiceTypeFilter] = useState<"همه" | "فروش" | "خرید">("همه");
+  const [invoiceStatusFilter, setInvoiceStatusFilter] = useState("همه");
+  const [printingInvoices, setPrintingInvoices] = useState(false);
   const [invoicePage, setInvoicePage] = useState(1);
   const invoicePageSize = 25;
   const blankItem = { productId: "", quantity: "1", unit: "", unitPrice: "" };
@@ -1693,15 +1697,24 @@ function Invoices({
       ),
     [state.invoices, form.partyId, party?.code]
   );
+  const visibleInvoices = useMemo(() => {
+    return state.invoices.filter(invoice => {
+      if (invoicePartyFilter !== "همه" && invoice.partyId !== invoicePartyFilter) return false;
+      if (invoiceTypeFilter !== "همه" && invoice.type !== invoiceTypeFilter) return false;
+      if (invoiceStatusFilter !== "همه" && invoice.status !== invoiceStatusFilter) return false;
+      return true;
+    });
+  }, [state.invoices, invoicePartyFilter, invoiceTypeFilter, invoiceStatusFilter]);
+
   const sortedInvoices = useMemo(
     () =>
-      [...state.invoices].sort(
+      [...visibleInvoices].sort(
         (a, b) =>
           (invoiceSortDirection === "asc" ? 1 : -1) *
           (jalaliDateKey(a.date).localeCompare(jalaliDateKey(b.date)) ||
             a.id.localeCompare(b.id))
       ),
-    [invoiceSortDirection, state.invoices]
+    [invoiceSortDirection, visibleInvoices]
   );
   const invoicePageCount = Math.max(1, Math.ceil(sortedInvoices.length / invoicePageSize));
   const safeInvoicePage = Math.min(invoicePage, invoicePageCount);
@@ -1709,9 +1722,10 @@ function Invoices({
     (safeInvoicePage - 1) * invoicePageSize,
     safeInvoicePage * invoicePageSize
   );
+  const displayInvoices = printingInvoices ? sortedInvoices : paginatedInvoices;
   useEffect(() => {
     setInvoicePage(1);
-  }, [invoiceSortDirection]);
+  }, [invoiceSortDirection, invoicePartyFilter, invoiceTypeFilter, invoiceStatusFilter]);
   function suggestedPrice(
     productId: string,
     unit: string,
@@ -2067,7 +2081,7 @@ function Invoices({
     });
   }
   return (
-    <div className="page-stack page-enter">
+    <div className="page-stack page-enter invoices-page">
       <PageIntro
         kicker="مرکز اسناد"
         title="فاکتورها"
@@ -2133,6 +2147,72 @@ function Invoices({
           tone="violet"
         />
       </section>
+      <div className="print-customer-summary print-roll-banner">
+        <div className="print-roll-title">
+          <span>کارگاه صنعتی — گزارش طوماری فاکتورها و وضعیت تسویه (افقی)</span>
+          <strong>{invoicePartyFilter === "همه" ? "کلیه طرف‌حساب‌ها و فاکتورها" : `طرف حساب: ${personName(state, invoicePartyFilter)}`}</strong>
+        </div>
+        <div className="print-roll-meta">
+          <span>تاریخ گزارش: {todayJalali()}</span>
+          <span>تعداد فاکتورها: {formatNumber(displayInvoices.length)} فقره</span>
+          <span>مجموع مبلغ فاکتورها: {formatMoney(displayInvoices.reduce((sum, inv) => sum + inv.amount, 0), state.settings.currency)}</span>
+          <span>مانده تسویه‌نشده: {formatMoney(displayInvoices.reduce((sum, inv) => sum + Math.max(0, inv.amount - (inv.paidAmount || 0)), 0), state.settings.currency)}</span>
+        </div>
+      </div>
+      <div className="toolbar invoice-filters">
+        <label>
+          نوع فاکتور
+          <select
+            value={invoiceTypeFilter}
+            onChange={e => setInvoiceTypeFilter(e.target.value as "همه" | "فروش" | "خرید")}
+          >
+            <option value="همه">همه نوع‌ها</option>
+            <option value="فروش">فروش</option>
+            <option value="خرید">خرید</option>
+          </select>
+        </label>
+        <label>
+          وضعیت
+          <select
+            value={invoiceStatusFilter}
+            onChange={e => setInvoiceStatusFilter(e.target.value)}
+          >
+            <option value="همه">همه وضعیت‌ها</option>
+            <option value="باز">باز</option>
+            <option value="تسویه جزئی">تسویه جزئی</option>
+            <option value="تسویه شده">تسویه شده</option>
+            <option value="باطل">باطل</option>
+          </select>
+        </label>
+        <label>
+          مشتری / طرف حساب
+          <select
+            value={invoicePartyFilter}
+            onChange={e => setInvoicePartyFilter(e.target.value)}
+          >
+            <option value="همه">همه طرف‌حساب‌ها</option>
+            {state.people.map(person => (
+              <option key={person.id} value={person.id}>
+                {person.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          className="button button-ghost button-small"
+          onClick={() => {
+            setPrintingInvoices(true);
+            setExpandedInvoiceIds(new Set(sortedInvoices.map(inv => inv.id)));
+            window.setTimeout(
+              () => printWithTarget("invoices-roll", true, () => setPrintingInvoices(false)),
+              0
+            );
+          }}
+        >
+          چاپ طومار فاکتورها (افقی)
+        </button>
+      </div>
       <div className="panel table-panel">
         <div className="panel-heading">
           <div>

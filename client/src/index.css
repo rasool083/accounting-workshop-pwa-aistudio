@@ -3409,7 +3409,10 @@ tr:last-child td {
 }
 @page landscape {
   size: A4 landscape;
-  margin: 10mm;
+  margin: 6mm 6mm;
+}
+@page {
+  margin: 6mm 6mm;
 }
 .print-customer-summary {
   display: none;
@@ -3422,7 +3425,7 @@ tr:last-child td {
   body {
     background: #fff !important;
     color: #111 !important;
-    font-size: 10px !important;
+    font-size: 9.5px !important;
   }
 
   body.print-invoice .sidebar,
@@ -3432,6 +3435,9 @@ tr:last-child td {
   body.print-checks .sidebar,
   body.print-checks .topbar,
   body.print-checks .toast,
+  body.print-invoices-roll .sidebar,
+  body.print-invoices-roll .topbar,
+  body.print-invoices-roll .toast,
   body.print-month-close .sidebar,
   body.print-month-close .topbar,
   body.print-month-close .toast,
@@ -3468,18 +3474,55 @@ tr:last-child td {
     visibility: visible !important;
   }
   body.print-invoice .print-private,
-  body.print-checks .print-private {
+  body.print-checks .print-private,
+  body.print-invoices-roll .print-private {
     display: none !important;
   }
   body.print-invoice .print-customer-summary,
-  body.print-checks .print-customer-summary {
+  body.print-checks .print-customer-summary,
+  body.print-invoices-roll .print-customer-summary {
     display: block !important;
-    margin: 0 0 12px;
-    padding: 0 0 8px;
-    border-bottom: 1px solid #bbb;
-    text-align: center;
-    font-size: 16px;
+    margin: 0 0 10px;
+    padding: 0 0 6px;
+    border-bottom: 1.5px solid #244b43;
+    text-align: right;
+    font-size: 13px;
     font-weight: 700;
+  }
+  body.print-checks .print-roll-banner,
+  body.print-invoices-roll .print-roll-banner {
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+    flex-wrap: wrap !important;
+    gap: 8px 16px !important;
+    padding: 6px 10px !important;
+    margin-bottom: 8px !important;
+    border: 1.5px solid #244b43 !important;
+    border-radius: 6px !important;
+    background: #f4f8f6 !important;
+    page-break-after: avoid !important;
+    break-after: avoid !important;
+  }
+  body.print-checks .print-roll-title,
+  body.print-invoices-roll .print-roll-title {
+    font-size: 12px !important;
+    font-weight: 700 !important;
+    color: #142d31 !important;
+  }
+  body.print-checks .print-roll-title strong,
+  body.print-invoices-roll .print-roll-title strong {
+    display: block !important;
+    font-size: 13px !important;
+    margin-top: 2px !important;
+  }
+  body.print-checks .print-roll-meta,
+  body.print-invoices-roll .print-roll-meta {
+    display: flex !important;
+    gap: 14px !important;
+    font-size: 9.5px !important;
+    color: #333 !important;
+    flex-wrap: wrap !important;
   }
 
   body.print-checks * {
@@ -3501,6 +3544,29 @@ tr:last-child td {
   body.print-checks .checks-page > .page-intro,
   body.print-checks .checks-page .panel-heading-actions,
   body.print-checks .checks-page .panel-heading {
+    display: none !important;
+  }
+
+  body.print-invoices-roll * {
+    visibility: hidden !important;
+  }
+  body.print-invoices-roll .invoices-page,
+  body.print-invoices-roll .invoices-page * {
+    visibility: visible !important;
+  }
+  body.print-invoices-roll .invoices-page {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  body.print-invoices-roll .metric-grid,
+  body.print-invoices-roll .pagination,
+  body.print-invoices-roll .invoices-page > .page-intro,
+  body.print-invoices-roll .invoices-page .panel-heading-actions,
+  body.print-invoices-roll .invoices-page .panel-heading,
+  body.print-invoices-roll .invoice-filters {
     display: none !important;
   }
 
@@ -3575,6 +3641,7 @@ tr:last-child td {
 
   body.print-invoice table,
   body.print-checks table,
+  body.print-invoices-roll table,
   body.print-month-close table,
   body.print-statement table,
   body.print-ledger table {
@@ -3587,21 +3654,25 @@ tr:last-child td {
   body.print-invoice td,
   body.print-checks th,
   body.print-checks td,
+  body.print-invoices-roll th,
+  body.print-invoices-roll td,
   body.print-month-close th,
   body.print-month-close td,
   body.print-statement th,
   body.print-statement td,
   body.print-ledger th,
   body.print-ledger td {
-    padding: 5px 4px !important;
+    padding: 4px 4px !important;
     border: 1px solid #cfd5d2 !important;
     color: #111 !important;
     overflow-wrap: anywhere;
     vertical-align: top;
+    font-size: 9px !important;
   }
 
   body.print-invoice .table-wrap,
   body.print-checks .table-wrap,
+  body.print-invoices-roll .table-wrap,
   body.print-month-close .table-wrap,
   body.print-statement .table-wrap,
   body.print-ledger .table-wrap {
@@ -3610,7 +3681,8 @@ tr:last-child td {
   }
 
   body.print-invoice tr,
-  body.print-checks tr,
+  body.print-checks tr.check-row,
+  body.print-invoices-roll tr.invoice-row,
   body.print-month-close tr,
   body.print-statement tr,
   body.print-ledger tr {
@@ -3618,9 +3690,84 @@ tr:last-child td {
     page-break-inside: avoid;
   }
 
+  /* Continuous roll rules - avoid forced page breaks on detail accordion rows */
+  body.print-checks tr.allocation-detail-row,
+  body.print-invoices-roll tr.allocation-detail-row {
+    break-inside: auto !important;
+    page-break-inside: auto !important;
+    break-before: auto !important;
+    page-break-before: auto !important;
+    break-after: auto !important;
+    page-break-after: auto !important;
+  }
+
+  body.print-checks .allocation-detail-row td,
+  body.print-invoices-roll .allocation-detail-row td {
+    padding: 3px 6px !important;
+    background: #fbfbfb !important;
+    border-bottom: 2px solid #aaa !important;
+  }
+
+  body.print-checks .allocation-detail-card,
+  body.print-invoices-roll .allocation-detail-card {
+    display: inline-flex !important;
+    flex-wrap: wrap !important;
+    align-items: center !important;
+    gap: 6px 12px !important;
+    padding: 3px 7px !important;
+    margin: 2px 4px 2px 0 !important;
+    border: 1px solid #ccc !important;
+    border-radius: 4px !important;
+    background: #fff !important;
+    font-size: 8.5px !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  body.print-invoices-roll .invoice-accordion-box {
+    display: block !important;
+    padding: 2px 4px !important;
+  }
+
+  body.print-invoices-roll .invoice-customer-info-strip {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    gap: 12px !important;
+    padding: 3px 6px !important;
+    margin-bottom: 4px !important;
+    background: #f0f6f4 !important;
+    border-radius: 3px !important;
+    font-size: 9px !important;
+    font-weight: 500 !important;
+  }
+
+  body.print-invoices-roll .invoice-items-mini-table {
+    margin-bottom: 3px !important;
+    padding: 2px 4px !important;
+    font-size: 8.5px !important;
+  }
+
+  body.print-invoices-roll .mini-item-badge {
+    display: inline-block !important;
+    margin-left: 8px !important;
+    padding: 1px 5px !important;
+    background: #f2f2f2 !important;
+    border-radius: 3px !important;
+    border: 1px solid #ddd !important;
+  }
+
+  body.print-invoices-roll .mini-table-title {
+    font-weight: 700 !important;
+    font-size: 8.5px !important;
+    color: #244b43 !important;
+    margin-bottom: 2px !important;
+  }
+
   body.print-invoice .form-actions,
   body.print-checks .button,
   body.print-checks .check-filters,
+  body.print-invoices-roll .button,
+  body.print-invoices-roll .invoice-filters,
   body.print-month-close .button,
   body.print-statement .button,
   body.print-ledger .button {
