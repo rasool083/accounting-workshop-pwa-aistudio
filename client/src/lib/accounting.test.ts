@@ -186,8 +186,8 @@ describe("FIFO settlement balances", () => {
     const second = balances.get("check-2:invoice-1")!;
 
     expect(first.remainingCheck).toBeCloseTo(0, 2);
-    expect(first.remainingInvoice).toBeCloseTo(20_000_000, 2);
-    expect(second.remainingCheck).toBeCloseTo(30_000_000, 2);
+    expect(first.remainingInvoice).toBeCloseTo(26_605_504.59, 2);
+    expect(second.remainingCheck).toBeCloseTo(20_201_834.86, 2);
     expect(second.remainingInvoice).toBeCloseTo(0, 2);
   });
 
@@ -296,14 +296,81 @@ describe("FIFO settlement balances", () => {
     expect(settleChecksFIFO([{ ...returnedCheck, status: "باطل" as const }], [invoice])).toEqual([]);
   });
 
-  it("reports overdue days only from due date to actual collection", () => {
+  it("calculates late profit tier days from invoice date to check due date", () => {
     const check = {
-      id: "overdue-check", number: "O-1", receivedDate: "1405/01/01",
-      dueDate: "1405/02/01", collectedDate: "1405/02/11", amount: 1000,
-      status: "وصول شده" as const, bank: "",
+      id: "overdue-check",
+      number: "O-1",
+      receivedDate: "1405/01/01",
+      dueDate: "1405/02/01",
+      amount: 1000,
+      status: "نزد ما" as const,
+      bank: "",
     };
-    expect(calculateLateProfit(check, undefined, "1404/01/01").days).toBe(10);
-    expect(calculateLateProfit({ ...check, collectedDate: undefined }).days).toBe(0);
+    // From 1405/01/01 to 1405/02/01 is 31 days (Farvardin has 31 days)
+    expect(calculateLateProfit(check, undefined, "1405/01/01").days).toBe(31);
+  });
+
+  it("allocates a targeted check specifically to the requested invoice, and subsequent checks settle older invoices", () => {
+    const partyId = "customer-target";
+    const invoiceOld = {
+      id: "inv-old",
+      number: "101",
+      type: "فروش" as const,
+      date: "1405/01/10",
+      partyId,
+      items: [],
+      allocations: [],
+      amount: 100_000,
+      paidAmount: 0,
+      status: "باز" as const,
+      note: "",
+    };
+    const invoiceNew = {
+      id: "inv-new",
+      number: "102",
+      type: "فروش" as const,
+      date: "1405/02/10",
+      partyId,
+      items: [],
+      allocations: [],
+      amount: 50_000,
+      paidAmount: 0,
+      status: "باز" as const,
+      note: "",
+    };
+    // Check A is targeted specifically to invoiceNew per customer request
+    const checkA = {
+      id: "chk-targeted",
+      number: "A-01",
+      partyId,
+      targetInvoiceId: "inv-new",
+      receivedDate: "1405/02/10",
+      dueDate: "1405/02/20",
+      amount: 50_000,
+      status: "نزد ما" as const,
+      bank: "",
+    };
+    // Check B is a general check with later due date
+    const checkB = {
+      id: "chk-general",
+      number: "B-02",
+      partyId,
+      receivedDate: "1405/02/10",
+      dueDate: "1405/03/20",
+      amount: 100_000,
+      status: "نزد ما" as const,
+      bank: "",
+    };
+    const settlements = settleChecksFIFO([checkA, checkB], [invoiceOld, invoiceNew]);
+    // Check A settled invoiceNew first
+    const allocNew = settlements.find(s => s.checkId === checkA.id);
+    expect(allocNew?.invoiceId).toBe("inv-new");
+    expect(allocNew?.principalAmount).toBe(50_000);
+
+    // Check B then settled the older invoiceOld
+    const allocOld = settlements.find(s => s.checkId === checkB.id);
+    expect(allocOld?.invoiceId).toBe("inv-old");
+    expect(allocOld?.principalAmount).toBe(100_000);
   });
 
   it("allocates supplier payments across the oldest purchase invoices", () => {

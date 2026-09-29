@@ -334,6 +334,7 @@ export interface Check {
   id: string;
   number: string;
   partyId?: string;
+  targetInvoiceId?: string;
   dueDate: string;
   receivedDate: string;
   /** تاریخ واقعی وصول؛ با سررسید یا تاریخ دریافت یکی فرض نمی‌شود. */
@@ -1224,6 +1225,10 @@ export function normalizeState(input: unknown): AppState {
           paymentRuleId:
             typeof check.paymentRuleId === "string"
               ? check.paymentRuleId
+              : undefined,
+          targetInvoiceId:
+            typeof check.targetInvoiceId === "string" && check.targetInvoiceId.trim()
+              ? check.targetInvoiceId.trim()
               : undefined,
         }))
       : [],
@@ -2216,61 +2221,91 @@ export function settleChecksFIFO(
     eligibleChecks.map(check => [check.id, Math.max(0, check.amount)])
   );
 
+  function allocateToInvoice(check: Check, invoice: Invoice): boolean {
+    const checkRemaining = remainingByCheck.get(check.id) || 0;
+    if (checkRemaining <= FIFO_EPSILON) return false;
+    const baseRemaining = remainingByInvoice.get(invoice.id) || 0;
+    if (baseRemaining <= FIFO_EPSILON) {
+      remainingByInvoice.set(invoice.id, 0);
+      return false;
+    }
+    const rule =
+      paymentRules.find(item => item.id === invoice.paymentRuleId) ||
+      paymentRules.find(item => item.active);
+    const probe = calculateLateProfit(
+      { ...check, amount: checkRemaining },
+      rule,
+      invoice.date,
+      baseRemaining,
+      dayBasis
+    );
+    const amount = Math.min(checkRemaining, probe.settled);
+    const factor = baseRemaining > 0 ? probe.settled / baseRemaining : 1;
+    const calculatedPrincipal = Math.min(
+      baseRemaining,
+      amount / Math.max(1, factor)
+    );
+    const principalAmount =
+      baseRemaining - calculatedPrincipal <= FIFO_EPSILON
+        ? baseRemaining
+        : calculatedPrincipal;
+    const profit = Math.max(0, amount - principalAmount);
+    if (amount <= FIFO_EPSILON || principalAmount <= FIFO_EPSILON) return false;
+
+    settlements.push({
+      checkId: check.id,
+      invoiceId: invoice.id,
+      amount,
+      principalAmount,
+      profit,
+      days: probe.days,
+    });
+    const invoiceRemaining = Math.max(0, baseRemaining - principalAmount);
+    remainingByInvoice.set(
+      invoice.id,
+      invoiceRemaining <= FIFO_EPSILON ? 0 : invoiceRemaining
+    );
+    const nextCheckRemaining = Math.max(0, checkRemaining - amount);
+    remainingByCheck.set(
+      check.id,
+      nextCheckRemaining <= FIFO_EPSILON ? 0 : nextCheckRemaining
+    );
+    return true;
+  }
+
+  // فاز ۱: تخصیص اختصاصی چک‌های نشانه‌گذاری‌شده به درخواست مشتری (Targeted Checks)
+  for (const check of eligibleChecks) {
+    if (!check.targetInvoiceId) continue;
+    const targetInvoice = eligibleInvoices.find(
+      inv => inv.id === check.targetInvoiceId && inv.partyId === check.partyId
+    );
+    if (targetInvoice) {
+      allocateToInvoice(check, targetInvoice);
+    }
+  }
+
+  // فاز ۲: تسویه ترتیبی خودکار (FIFO عمومی)
+  // چک‌ها از سررسید نزدیک‌تر به قدیمی‌ترین فاکتورهای باز تسویه می‌شوند.
+  // اگر فاکتور قبلی هنوز تسویه نشده باشد با چک بعدی تسویه خواهد شد.
   for (const check of eligibleChecks) {
     let checkRemaining = remainingByCheck.get(check.id) || 0;
+    if (checkRemaining <= FIFO_EPSILON) continue;
+
     for (const invoice of eligibleInvoices) {
-      if (
-        invoice.partyId !== check.partyId ||
-        checkRemaining <= FIFO_EPSILON
-      )
-        continue;
+      if (invoice.partyId !== check.partyId) continue;
+      checkRemaining = remainingByCheck.get(check.id) || 0;
+      if (checkRemaining <= FIFO_EPSILON) break;
+
       const baseRemaining = remainingByInvoice.get(invoice.id) || 0;
-      if (baseRemaining <= FIFO_EPSILON) {
-        remainingByInvoice.set(invoice.id, 0);
-        continue;
-      }
-      const rule =
-        paymentRules.find(item => item.id === invoice.paymentRuleId) ||
-        paymentRules.find(item => item.active);
-      const probe = calculateLateProfit(
-        { ...check, amount: checkRemaining },
-        rule,
-        invoice.date,
-        baseRemaining,
-        dayBasis
-      );
-      const amount = Math.min(checkRemaining, probe.settled);
-      const factor = baseRemaining > 0 ? probe.settled / baseRemaining : 1;
-      const calculatedPrincipal = Math.min(
-        baseRemaining,
-        amount / Math.max(1, factor)
-      );
-      const principalAmount =
-        baseRemaining - calculatedPrincipal <= FIFO_EPSILON
-          ? baseRemaining
-          : calculatedPrincipal;
-      const profit = Math.max(0, amount - principalAmount);
-      if (amount <= FIFO_EPSILON || principalAmount <= FIFO_EPSILON) continue;
-      settlements.push({
-        checkId: check.id,
-        invoiceId: invoice.id,
-        amount,
-        principalAmount,
-        profit,
-        days: probe.days,
-      });
-      const invoiceRemaining = Math.max(0, baseRemaining - principalAmount);
-      remainingByInvoice.set(
-        invoice.id,
-        invoiceRemaining <= FIFO_EPSILON ? 0 : invoiceRemaining
-      );
-      const nextCheckRemaining = Math.max(0, checkRemaining - amount);
-      checkRemaining =
-        nextCheckRemaining <= FIFO_EPSILON ? 0 : nextCheckRemaining;
-      remainingByCheck.set(check.id, checkRemaining);
+      if (baseRemaining <= FIFO_EPSILON) continue;
+
+      allocateToInvoice(check, invoice);
+
+      // اگر فاکتور هنوز مانده دارد، تمام مبلغ چک مصرف شده و به فاکتور جدیدتر نمی‌رویم
       if ((remainingByInvoice.get(invoice.id) || 0) > FIFO_EPSILON) break;
     }
   }
+
   return settlements;
 }
 
@@ -2892,11 +2927,10 @@ export function calculateLateProfit(
   invoiceBaseAmount = check.amount,
   dayBasisOverride: number | "شمسی" = 30
 ) {
-  // A due date is not a collection date. Until the check is actually collected,
-  // no late fee is earned; the informational overdue period starts at dueDate
-  // and ends at the recorded collectedDate.
-  const days = check.collectedDate
-    ? jalaliDayDifference(check.dueDate, check.collectedDate)
+  const effectiveInvoiceDate = invoiceDate || check.invoiceDate;
+  // پله‌های هزینه دیرکرد بر اساس فاصلهٔ تقویمی میان تاریخ فاکتور و تاریخ سررسید چک محاسبه می‌شود
+  const days = effectiveInvoiceDate && check.dueDate
+    ? jalaliDayDifference(effectiveInvoiceDate, check.dueDate)
     : 0;
   const activeRule = rule || {
     dayBasis: 30,
@@ -2907,13 +2941,13 @@ export function calculateLateProfit(
   const tier =
     [...activeRule.tiers]
       .sort((a, b) => a.maxDays - b.maxDays)
-      .find(item => overdueDays <= item.maxDays) ||
+      .find(item => days <= item.maxDays) ||
     activeRule.tiers[activeRule.tiers.length - 1];
   const rate = tier?.rate || 0;
   const basis =
     dayBasisOverride === "شمسی"
       ? jalaliMonthDayBasis(
-          invoiceDate || check.invoiceDate || check.receivedDate
+          effectiveInvoiceDate || check.receivedDate
         )
       : Math.max(1, Number(dayBasisOverride) || activeRule.dayBasis || 30);
   const profit = invoiceBaseAmount * ((rate * overdueDays) / basis);

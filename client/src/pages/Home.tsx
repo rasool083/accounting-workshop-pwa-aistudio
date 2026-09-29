@@ -6441,6 +6441,7 @@ function Checks({
     amount: "",
     feeAmount: "",
     paymentRuleId: "",
+    targetInvoiceId: "",
     note: "",
   };
   const [form, setForm] = useState(blank);
@@ -6558,6 +6559,7 @@ function Checks({
       amount: String(check.amount),
       feeAmount: String(check.feeAmount || ""),
       paymentRuleId: check.paymentRuleId || "",
+      targetInvoiceId: check.targetInvoiceId || "",
       note: check.note || "",
     });
     setReplacementLines("");
@@ -6714,6 +6716,7 @@ function Checks({
       amount,
       feeAmount: Math.max(0, parseLocalizedNumber(form.feeAmount) || 0),
       paymentRuleId: form.paymentRuleId || undefined,
+      targetInvoiceId: form.targetInvoiceId || undefined,
       replacementIds: editingCheck?.replacementIds || [],
       note: editingCheck?.note || "",
     };
@@ -7065,6 +7068,11 @@ function Checks({
                               جایگزین چک اصلی
                             </small>
                           )}
+                          {check.targetInvoiceId && (
+                            <small className="badge amber" style={{ display: "inline-block", marginTop: 2 }}>
+                              هدف: فاکتور {state.invoices.find(inv => inv.id === check.targetInvoiceId)?.number || "اختصاصی"}
+                            </small>
+                          )}
                         </td>
                         <td>{personName(state, check.partyId)}</td>
                         <td>{formatDate(check.receivedDate)}</td>
@@ -7092,6 +7100,7 @@ function Checks({
                                   amount: String(check.amount),
                                   feeAmount: String(check.feeAmount || ""),
                                   paymentRuleId: check.paymentRuleId || "",
+                                  targetInvoiceId: check.targetInvoiceId || "",
                                   note: check.note || "",
                                 });
                               } else
@@ -7547,6 +7556,42 @@ function Checks({
                 ))}
               </select>
             </label>
+            {form.partyId && (
+              <label className="full-field">
+                تخصیص اختصاصی به فاکتور (درخواست مشتری - اختیاری)
+                <select
+                  value={form.targetInvoiceId}
+                  onChange={e =>
+                    setForm({ ...form, targetInvoiceId: e.target.value })
+                  }
+                >
+                  <option value="">تسویه ترتیبی خودکار (FIFO پیش‌فرض)</option>
+                  {state.invoices
+                    .filter(
+                      inv =>
+                        inv.partyId === form.partyId &&
+                        inv.type === "فروش" &&
+                        inv.status !== "باطل"
+                    )
+                    .sort(
+                      (a, b) =>
+                        jalaliDateKey(a.date).localeCompare(jalaliDateKey(b.date)) ||
+                        a.number.localeCompare(b.number)
+                    )
+                    .map(inv => {
+                      const remaining = Math.max(0, inv.amount - (inv.paidAmount || 0));
+                      return (
+                        <option key={inv.id} value={inv.id}>
+                          فاکتور {inv.number} (مورخ {inv.date}) — مانده: {formatMoney(remaining, state.settings.currency)} {inv.status === "تسویه شده" ? "[تسویه‌شده]" : ""}
+                        </option>
+                      );
+                    })}
+                </select>
+                <small className="muted-cell" style={{ display: "block", marginTop: 4 }}>
+                  در صورت تمایل مشتری برای تسویه یک فاکتور خاص، آن را انتخاب کنید. فاکتورهای قبلی با چک‌های بعدی تسویه خواهند شد.
+                </small>
+              </label>
+            )}
             {form.status === "خرج شده" && (
               <label className="full-field">
                 توضیحات خرج شدن
