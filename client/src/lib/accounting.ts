@@ -492,6 +492,15 @@ export interface CashEvent {
   note: string;
 }
 
+export interface CheckGroupAllocation {
+  id: string;
+  name: string;
+  partyId?: string;
+  checkIds: string[];
+  invoiceIds: string[];
+  createdAt: string;
+}
+
 export interface AppState {
   schemaVersion: number;
   revision: number;
@@ -516,6 +525,7 @@ export interface AppState {
   paymentRules: PaymentRule[];
   transactions: Transaction[];
   checks: Check[];
+  checkGroupAllocations?: CheckGroupAllocation[];
   accounts: Account[];
   audit: AuditEvent[];
   inventoryEvents: InventoryEvent[];
@@ -947,6 +957,7 @@ const seedState: AppState = {
   ],
   transactions: [],
   checks: [],
+  checkGroupAllocations: [],
   accounts: [
     { id: "cash", name: "صندوق اصلی", type: "صندوق", balance: 0 },
     { id: "bank", name: "حساب بانکی", type: "بانک", balance: 0 },
@@ -1230,6 +1241,20 @@ export function normalizeState(input: unknown): AppState {
             typeof check.targetInvoiceId === "string" && check.targetInvoiceId.trim()
               ? check.targetInvoiceId.trim()
               : undefined,
+        }))
+      : [],
+    checkGroupAllocations: Array.isArray(source.checkGroupAllocations)
+      ? source.checkGroupAllocations.map(alloc => ({
+          id: typeof alloc.id === "string" ? alloc.id : createId("cga"),
+          name: typeof alloc.name === "string" ? alloc.name : "تخصیص گروهی",
+          partyId: typeof alloc.partyId === "string" ? alloc.partyId : undefined,
+          checkIds: Array.isArray(alloc.checkIds)
+            ? alloc.checkIds.filter((x: unknown): x is string => typeof x === "string")
+            : [],
+          invoiceIds: Array.isArray(alloc.invoiceIds)
+            ? alloc.invoiceIds.filter((x: unknown): x is string => typeof x === "string")
+            : [],
+          createdAt: typeof alloc.createdAt === "string" ? alloc.createdAt : todayJalali(),
         }))
       : [],
     accounts: normalizedAccounts,
@@ -2189,7 +2214,8 @@ export function settleChecksFIFO(
   checks: Check[],
   invoices: Invoice[],
   paymentRules: PaymentRule[] = [],
-  dayBasis: number | "شمسی" = 30
+  dayBasis: number | "شمسی" = 30,
+  checkGroupAllocations: CheckGroupAllocation[] = []
 ) {
   const settlements: FIFOSettlement[] = [];
   const eligibleInvoices = [...invoices]
@@ -2273,20 +2299,36 @@ export function settleChecksFIFO(
     return true;
   }
 
-  // فاز ۱: تخصیص اختصاصی چک‌های نشانه‌گذاری‌شده به درخواست مشتری (Targeted Checks)
+  // فاز ۱: تخصیص‌های گروهی دستی کاربر (Group Allocations)
+  for (const group of checkGroupAllocations) {
+    const groupChecks = eligibleChecks.filter(c => group.checkIds.includes(c.id));
+    const groupInvoices = eligibleInvoices.filter(i => group.invoiceIds.includes(i.id));
+    for (const check of groupChecks) {
+      for (const invoice of groupInvoices) {
+        if (check.partyId && invoice.partyId && check.partyId !== invoice.partyId) continue;
+        if ((remainingByCheck.get(check.id) || 0) <= FIFO_EPSILON) break;
+        if ((remainingByInvoice.get(invoice.id) || 0) <= FIFO_EPSILON) continue;
+        allocateToInvoice(check, invoice);
+        if ((remainingByInvoice.get(invoice.id) || 0) > FIFO_EPSILON) break;
+      }
+    }
+  }
+
+  // فاز ۲: تخصیص اختصاصی چک‌های نشانه‌گذاری‌شده به درخواست مشتری (Targeted Checks)
   for (const check of eligibleChecks) {
     if (!check.targetInvoiceId) continue;
+    if ((remainingByCheck.get(check.id) || 0) <= FIFO_EPSILON) continue;
     const targetInvoice = eligibleInvoices.find(
       inv => inv.id === check.targetInvoiceId && inv.partyId === check.partyId
     );
-    if (targetInvoice) {
+    if (targetInvoice && (remainingByInvoice.get(targetInvoice.id) || 0) > FIFO_EPSILON) {
       allocateToInvoice(check, targetInvoice);
     }
   }
 
-  // فاز ۲: تسویه ترتیبی خودکار (FIFO عمومی)
+  // فاز ۳: تسویه ترتیبی خودکار (FIFO عمومی)
   // چک‌ها از سررسید نزدیک‌تر به قدیمی‌ترین فاکتورهای باز تسویه می‌شوند.
-  // اگر فاکتور قبلی هنوز تسویه نشده باشد با چک بعدی تسویه خواهد شد.
+  // قانون ۲: تا زمانی که فاکتور قدیمی‌تر تسویه نشده، چکی به فاکتور بعدی تخصیص نمی‌یابد.
   for (const check of eligibleChecks) {
     let checkRemaining = remainingByCheck.get(check.id) || 0;
     if (checkRemaining <= FIFO_EPSILON) continue;
@@ -2509,7 +2551,8 @@ export function applyCheckFIFO(state: AppState, check: Check) {
     partyChecks,
     state.invoices,
     state.paymentRules,
-    state.settings.dayBasis
+    state.settings.dayBasis,
+    state.checkGroupAllocations || []
   );
   const byInvoice = new Map<string, FIFOSettlement[]>();
   settlements.forEach(item =>
@@ -2555,7 +2598,8 @@ export function rebuildCheckAllocations(state: AppState): AppState {
     state.checks,
     state.invoices,
     state.paymentRules,
-    state.settings.dayBasis
+    state.settings.dayBasis,
+    state.checkGroupAllocations || []
   );
   const byInvoice = new Map<string, FIFOSettlement[]>();
   settlements.forEach(item => {
@@ -2937,13 +2981,17 @@ export function calculateLateProfit(
     graceDays: 0,
     tiers: [{ maxDays: 9999, rate: 0 }],
   };
-  const overdueDays = Math.max(0, days - activeRule.graceDays);
   const tier =
     [...activeRule.tiers]
       .sort((a, b) => a.maxDays - b.maxDays)
       .find(item => days <= item.maxDays) ||
     activeRule.tiers[activeRule.tiers.length - 1];
   const rate = tier?.rate || 0;
+  const overdueDays = rate > 0
+    ? (activeRule.graceDays > 0 && activeRule.tiers.length === 1
+        ? Math.max(0, days - activeRule.graceDays)
+        : days)
+    : 0;
   const basis =
     dayBasisOverride === "شمسی"
       ? jalaliMonthDayBasis(

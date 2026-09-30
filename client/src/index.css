@@ -3524,6 +3524,35 @@ tr:last-child td {
     color: #333 !important;
     flex-wrap: wrap !important;
   }
+  body.print-checks .roll-subtable,
+  body.print-invoices-roll .roll-subtable {
+    width: 100% !important;
+    table-layout: fixed !important;
+    border-collapse: collapse !important;
+    margin: 3px 0 !important;
+  }
+  body.print-checks .roll-subtable th,
+  body.print-invoices-roll .roll-subtable th {
+    background: #eaf1ed !important;
+    color: #111 !important;
+    border: 1px solid #aaa !important;
+    font-size: 8px !important;
+    padding: 3px 4px !important;
+    font-weight: 700 !important;
+    text-align: right !important;
+  }
+  body.print-checks .roll-subtable td,
+  body.print-invoices-roll .roll-subtable td {
+    border: 1px solid #ccc !important;
+    font-size: 8px !important;
+    padding: 3px 4px !important;
+    text-align: right !important;
+    background: #fff !important;
+  }
+  body.print-checks .roll-subtable tr:nth-child(even) td,
+  body.print-invoices-roll .roll-subtable tr:nth-child(even) td {
+    background: #fbfdfc !important;
+  }
 
   body.print-checks * {
     visibility: hidden !important;
@@ -3724,11 +3753,13 @@ tr:last-child td {
     page-break-inside: avoid !important;
   }
 
+  body.print-checks .check-accordion-box,
   body.print-invoices-roll .invoice-accordion-box {
     display: block !important;
     padding: 2px 4px !important;
   }
 
+  body.print-checks .invoice-customer-info-strip,
   body.print-invoices-roll .invoice-customer-info-strip {
     display: flex !important;
     flex-wrap: wrap !important;
@@ -3773,6 +3804,52 @@ tr:last-child td {
   body.print-ledger .button {
     display: none !important;
   }
+}
+
+.roll-subtable-wrap {
+  width: 100%;
+  overflow-x: auto;
+  margin: 6px 0;
+}
+.roll-subtable {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface, #fff);
+  border: 1px solid var(--line, #dce4e0);
+  border-radius: 6px;
+  font-size: 0.82rem;
+}
+.roll-subtable th {
+  background: color-mix(in srgb, var(--primary, #0f766e) 8%, var(--surface, #fff));
+  color: var(--ink, #142d31);
+  font-weight: 700;
+  padding: 6px 8px;
+  border: 1px solid var(--line, #dce4e0);
+  text-align: right;
+  font-size: 0.8rem;
+}
+.roll-subtable td {
+  padding: 6px 8px;
+  border: 1px solid var(--line, #e6ede9);
+  text-align: right;
+  font-size: 0.8rem;
+}
+.roll-subtable tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--primary, #0f766e) 3%, var(--surface, #fff));
+}
+.invoice-customer-info-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 8px 12px;
+  margin-bottom: 6px;
+  background: color-mix(in srgb, var(--primary, #0f766e) 6%, var(--surface, #fff));
+  border: 1px solid var(--line, #dce4e0);
+  border-radius: 6px;
+  font-size: 0.84rem;
+}
+.invoice-accordion-box {
+  padding: 8px;
 }
 
 /* Supplier directory: independent sourcing workspace, separate from accounting ledgers. */

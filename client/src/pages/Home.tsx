@@ -40,6 +40,7 @@ import {
 import {
   AppState,
   BankFeeRule,
+  CheckGroupAllocation,
   CheckStatus,
   PERSON_TYPES,
   ProductionCost,
@@ -1599,6 +1600,7 @@ function Invoices({
   const [invoiceTypeFilter, setInvoiceTypeFilter] = useState<"همه" | "فروش" | "خرید">("همه");
   const [invoiceStatusFilter, setInvoiceStatusFilter] = useState("همه");
   const [printingInvoices, setPrintingInvoices] = useState(false);
+  const [groupAllocOpen, setGroupAllocOpen] = useState(false);
   const [invoicePage, setInvoicePage] = useState(1);
   const invoicePageSize = 25;
   const blankItem = { productId: "", quantity: "1", unit: "", unitPrice: "" };
@@ -1648,9 +1650,16 @@ function Invoices({
         state.checks,
         state.invoices,
         state.paymentRules,
-        state.settings.dayBasis
+        state.settings.dayBasis,
+        state.checkGroupAllocations || []
       ),
-    [state.checks, state.invoices, state.paymentRules, state.settings.dayBasis]
+    [
+      state.checks,
+      state.invoices,
+      state.paymentRules,
+      state.settings.dayBasis,
+      state.checkGroupAllocations,
+    ]
   );
   const allocationBalances = useMemo(
     () =>
@@ -2201,6 +2210,13 @@ function Invoices({
         <button
           type="button"
           className="button button-ghost button-small"
+          onClick={() => setGroupAllocOpen(true)}
+        >
+          تخصیص گروهی چک به فاکتور
+        </button>
+        <button
+          type="button"
+          className="button button-ghost button-small"
           onClick={() => {
             setPrintingInvoices(true);
             setExpandedInvoiceIds(new Set(sortedInvoices.map(inv => inv.id)));
@@ -2210,7 +2226,7 @@ function Invoices({
             );
           }}
         >
-          چاپ طومار فاکتورها (افقی)
+          چاپ طومار فاکتورها برای مشتری (افقی)
         </button>
       </div>
       <div className="panel table-panel">
@@ -2261,10 +2277,13 @@ function Invoices({
             </thead>
             <tbody>
               {sortedInvoices.length ? (
-                paginatedInvoices.map(invoice => {
+                displayInvoices.map(invoice => {
                     const expanded = expandedInvoiceIds.has(invoice.id);
                     const allocations = invoiceAllocations.filter(
                       item => item.invoiceId === invoice.id
+                    );
+                    const invGroup = state.checkGroupAllocations?.find(
+                      g => g.invoiceIds.includes(invoice.id)
                     );
                     return (
                       <Fragment key={invoice.id}>
@@ -2282,11 +2301,19 @@ function Invoices({
                                   return next;
                                 })
                               }
-                              title="نمایش چک‌های تخصیص‌یافته"
+                              title="نمایش چک‌های تخصیص‌یافته و مشخصات مشتری"
                             >
                               <ChevronDown size={14} />
                               <strong>{invoice.number}</strong>
                             </button>
+                            {invGroup && (
+                              <small
+                                className="badge teal"
+                                style={{ display: "inline-block", marginTop: 2, marginRight: 4 }}
+                              >
+                                گروه: {invGroup.name}
+                              </small>
+                            )}
                           </td>
                           <td>{formatDate(invoice.date)}</td>
                           <td>
@@ -2375,129 +2402,143 @@ function Invoices({
                         {expanded && (
                           <tr className="allocation-detail-row">
                             <td colSpan={11}>
-                              {allocations.length ? (
-                                <div className="invoice-check-allocation-list">
-                                  {allocations.map(item => {
-                                    const check = state.checks.find(
-                                      row => row.id === item.checkId
-                                    );
-                                    const checkAllocated = invoiceAllocations
-                                      .filter(
-                                        row => row.checkId === item.checkId
-                                      )
-                                      .reduce(
-                                        (sum, row) => sum + row.amount,
-                                        0
-                                      );
-                                    const invoiceAllocated = allocations.reduce(
-                                      (sum, row) => sum + row.principalAmount,
-                                      0
-                                    );
-                                    const allocationBalance =
-                                      allocationBalances.get(
-                                        `${item.checkId}:${item.invoiceId}`
-                                      );
-                                    const tone =
-                                      check?.status === "وصول شده"
-                                        ? "cleared"
-                                        : check?.status === "خرج شده"
-                                          ? "spent"
-                                          : [
-                                                "برگشتی",
-                                                "عودت داده شده",
-                                                "باطل",
-                                              ].includes(check?.status || "")
-                                            ? "bad"
-                                            : check?.status === "جایگزین شده"
-                                              ? "replaced"
-                                              : "open";
-                                    const profit = check && invoice
-                                      ? calculateEffectiveProfitForAllocation(state, invoice, item, check)
-                                      : null;
-                                    return (
-                                      <div
-                                        className={`allocation-detail-card check-allocation-card check-row-${tone}`}
-                                        key={`${item.checkId}-${item.invoiceId}`}
-                                      >
-                                        <strong>
-                                          چک {check?.number || "—"} ·{" "}
-                                          {check
-                                            ? formatMoney(
-                                                check.amount,
-                                                state.settings.currency
-                                              )
-                                            : "—"}
-                                        </strong>
-                                        <span>{check?.status || "—"}</span>
-                                        <span>
-                                          {check
-                                            ? formatDate(check.dueDate)
-                                            : "—"}
-                                        </span>
-                                        <span>
-                                          {formatMoney(
-                                            item.amount,
-                                            state.settings.currency
-                                          )}
-                                        </span>
-                                        <span>
-                                          تعداد روز: {formatNumber(item.days || 0)}{" "}
-                                          روز
-                                        </span>
-                                        <span className="print-private">
-                                          هزینه دیرکرد:{" "}
-                                          {formatMoney(
-                                            item.profit || 0,
-                                            state.settings.currency
-                                          )}
-                                        </span>
-                                        {profit && (
-                                          <>
-                                            <span className="print-private">
-                                              سود ظاهری: {formatMoney(profit.apparentProfit, state.settings.currency)} · {formatNumber(profit.apparentRate * 100)}٪
-                                            </span>
-                                            <span className="print-private">
-                                              سود مؤثر: {formatMoney(profit.effectiveProfit, state.settings.currency)} · {formatNumber(profit.effectiveRate * 100)}٪ · وصول {formatDate(profit.collectionDate)}
-                                            </span>
-                                          </>
+                              <div className="invoice-accordion-box">
+                                {(() => {
+                                  const person = state.people.find(p => p.id === invoice.partyId);
+                                  return (
+                                    <>
+                                      <div className="invoice-customer-info-strip">
+                                        <div>
+                                          <strong>مشتری / طرف حساب:</strong> {person?.name || "نامشخص"} {person?.code ? `(کد: ${person.code})` : ""}
+                                        </div>
+                                        {person?.phone && (
+                                          <div><strong>شماره تماس:</strong> {person.phone}</div>
                                         )}
-                                        <span>
-                                          مانده چک پس از تخصیص:{" "}
-                                          {check
-                                            ? formatMoney(
-                                                allocationBalance?.remainingCheck ??
-                                                  Math.max(
-                                                    0,
-                                                    check.amount - checkAllocated
-                                                  ),
-                                                state.settings.currency
-                                              )
-                                            : "—"}
-                                        </span>
-                                        <span>
-                                          مانده فاکتور پس از تخصیص:{" "}
-                                          {formatMoney(
-                                            Math.max(
-                                              0,
-                                              allocationBalance?.remainingInvoice ??
-                                                Math.max(
-                                                  0,
-                                                  (invoice?.amount || 0) -
-                                                    invoiceAllocated
-                                                )
-                                            ),
-                                            state.settings.currency
-                                          )}
-                                        </span>
+                                        {invGroup && (
+                                          <div><span className="soft-tag">تخصیص گروهی: {invGroup.name}</span></div>
+                                        )}
+                                        <div>
+                                          <strong>تاریخ صدور:</strong> {formatDate(invoice.date)} | <strong>نوع:</strong> {invoice.type}
+                                        </div>
+                                        <div>
+                                          <strong>مبلغ فاکتور:</strong> {formatMoney(invoice.amount, state.settings.currency)}
+                                        </div>
+                                        <div>
+                                          <strong>مانده تسویه‌نشده:</strong> {formatMoney(Math.max(0, invoice.amount - (invoice.paidAmount || 0)), state.settings.currency)}
+                                        </div>
                                       </div>
-                                    );
-                                  })}
-                                </div>
-                              ) : (
-                                <span className="muted-cell">
-                                  چکی برای این فاکتور تخصیص داده نشده است.
-                                </span>
-                              )}
+
+                                      {invoice.items && invoice.items.length > 0 && (
+                                        <div className="invoice-items-mini-table">
+                                          <span className="mini-table-title">اقلام و کالاهای فاکتور:</span>
+                                          {invoice.items.map((item, index) => {
+                                            const product = state.products.find(p => p.id === item.productId);
+                                            return (
+                                              <span className="mini-item-badge" key={index}>
+                                                {product?.name || "کالا"} · {formatNumber(Number(item.quantity) || 0)} {item.unit || "عدد"} · فی: {formatMoney(Number(item.unitPrice) || 0, state.settings.currency)}
+                                              </span>
+                                            );
+                                          })}
+                                        </div>
+                                      )}
+                                    </>
+                                  );
+                                })()}
+
+                                {allocations.length ? (
+                                  <div className="roll-subtable-wrap">
+                                    <table className="roll-subtable">
+                                      <thead>
+                                        <tr>
+                                          <th style={{ width: "16%" }}>شماره و سررسید چک</th>
+                                          <th style={{ width: "13%" }}>مبلغ چک</th>
+                                          <th style={{ width: "10%" }}>وضعیت چک</th>
+                                          <th style={{ width: "11%" }}>روزهای دیرکرد</th>
+                                          <th style={{ width: "16%" }}>نرخ و سود دیرکرد</th>
+                                          <th style={{ width: "18%" }}>مبلغ تسویه (اصل + سود)</th>
+                                          <th style={{ width: "13%" }}>مانده فاکتور</th>
+                                          <th style={{ width: "13%" }}>مانده چک جهت انتقال</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {allocations.map(item => {
+                                          const check = state.checks.find(
+                                            row => row.id === item.checkId
+                                          );
+                                          const allocationBalance =
+                                            allocationBalances.get(
+                                              `${item.checkId}:${item.invoiceId}`
+                                            );
+                                          const rule =
+                                            state.paymentRules.find(
+                                              r => r.id === invoice.paymentRuleId
+                                            ) || state.paymentRules.find(r => r.active);
+                                          const probe = check
+                                            ? calculateLateProfit(
+                                                check,
+                                                rule,
+                                                invoice.date,
+                                                invoice.amount,
+                                                state.settings.dayBasis
+                                              )
+                                            : null;
+                                          return (
+                                            <tr key={`${item.checkId}-${item.invoiceId}`}>
+                                              <td>
+                                                <strong>چک {check?.number || "—"}</strong>
+                                                <small style={{ display: "block", color: "#555" }}>
+                                                  سررسید: {formatDate(check?.dueDate || "")}
+                                                </small>
+                                              </td>
+                                              <td>{check ? formatMoney(check.amount, state.settings.currency) : "—"}</td>
+                                              <td>{check?.status || "—"}</td>
+                                              <td>{formatNumber(item.days || 0)} روز</td>
+                                              <td>
+                                                {item.profit > 0 ? (
+                                                  <span>
+                                                    {formatMoney(item.profit, state.settings.currency)}
+                                                    <small style={{ display: "block", color: "#555" }}>
+                                                      ({formatNumber((probe?.rate || 0) * 100)}٪)
+                                                    </small>
+                                                  </span>
+                                                ) : (
+                                                  <span className="muted-cell">بدون دیرکرد (۰٪)</span>
+                                                )}
+                                              </td>
+                                              <td>
+                                                <strong>{formatMoney(item.amount, state.settings.currency)}</strong>
+                                                <small style={{ display: "block", color: "#555" }}>
+                                                  اصل: {formatMoney(item.principalAmount, state.settings.currency)}
+                                                </small>
+                                              </td>
+                                              <td>
+                                                <strong>
+                                                  {formatMoney(
+                                                    allocationBalance?.remainingInvoice ?? 0,
+                                                    state.settings.currency
+                                                  )}
+                                                </strong>
+                                              </td>
+                                              <td>
+                                                <strong>
+                                                  {formatMoney(
+                                                    allocationBalance?.remainingCheck ?? 0,
+                                                    state.settings.currency
+                                                  )}
+                                                </strong>
+                                              </td>
+                                            </tr>
+                                          );
+                                        })}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                ) : (
+                                  <span className="muted-cell" style={{ display: "block", marginTop: 4 }}>
+                                    چکی برای این فاکتور تخصیص داده نشده است.
+                                  </span>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         )}
@@ -3083,9 +3124,304 @@ function Invoices({
           </div>
         </Dialog>
       )}
+      {groupAllocOpen && (
+        <GroupAllocationDialog
+          open={groupAllocOpen}
+          onClose={() => setGroupAllocOpen(false)}
+          state={state}
+          onSave={onSave}
+          defaultPartyId={invoicePartyFilter !== "همه" ? invoicePartyFilter : ""}
+        />
+      )}
     </div>
   );
 }
+
+function GroupAllocationDialog({
+  open,
+  onClose,
+  state,
+  onSave,
+  defaultPartyId = "",
+}: {
+  open: boolean;
+  onClose: () => void;
+  state: AppState;
+  onSave: (nextState: AppState, message: string) => void;
+  defaultPartyId?: string;
+}) {
+  const [partyId, setPartyId] = useState(defaultPartyId);
+  const [groupName, setGroupName] = useState("");
+  const [selectedCheckIds, setSelectedCheckIds] = useState<Set<string>>(new Set());
+  const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<Set<string>>(new Set());
+
+  const candidateChecks = useMemo(() => {
+    return state.checks
+      .filter(c => !["باطل", "عودت داده شده", "جایگزین شده", "خرج شده"].includes(c.status))
+      .filter(c => !partyId || c.partyId === partyId);
+  }, [state.checks, partyId]);
+
+  const candidateInvoices = useMemo(() => {
+    return state.invoices
+      .filter(i => i.type === "فروش" && i.status !== "باطل")
+      .filter(i => !partyId || i.partyId === partyId);
+  }, [state.invoices, partyId]);
+
+  const existingGroups = state.checkGroupAllocations || [];
+
+  const totalSelectedChecks = candidateChecks
+    .filter(c => selectedCheckIds.has(c.id))
+    .reduce((sum, c) => sum + c.amount, 0);
+
+  const totalSelectedInvoices = candidateInvoices
+    .filter(i => selectedInvoiceIds.has(i.id))
+    .reduce((sum, i) => sum + i.amount, 0);
+
+  function handleCreateGroup(e: React.FormEvent) {
+    e.preventDefault();
+    if (!groupName.trim()) {
+      window.alert("لطفاً نام یا عنوانی برای این گروه تخصیص وارد کنید.");
+      return;
+    }
+    if (selectedCheckIds.size === 0 || selectedInvoiceIds.size === 0) {
+      window.alert("لطفاً حداقل یک چک و یک فاکتور برای تخصیص گروهی انتخاب کنید.");
+      return;
+    }
+
+    const newGroup: CheckGroupAllocation = {
+      id: createId("grp-alloc"),
+      name: groupName.trim(),
+      partyId: partyId || undefined,
+      checkIds: Array.from(selectedCheckIds),
+      invoiceIds: Array.from(selectedInvoiceIds),
+      createdAt: todayJalali(),
+    };
+
+    const nextGroups = [...existingGroups, newGroup];
+    const nextState = rebuildCheckAllocations({
+      ...state,
+      checkGroupAllocations: nextGroups,
+    });
+
+    onSave(nextState, `تخصیص گروهی «${newGroup.name}» ثبت و محاسبات به‌روزرسانی شد`);
+    setGroupName("");
+    setSelectedCheckIds(new Set());
+    setSelectedInvoiceIds(new Set());
+  }
+
+  function handleDeleteGroup(groupId: string) {
+    const target = existingGroups.find(g => g.id === groupId);
+    if (!target) return;
+    if (!window.confirm(`آیا از لغو و حذف تخصیص گروهی «${target.name}» اطمینان دارید؟`)) return;
+
+    const nextGroups = existingGroups.filter(g => g.id !== groupId);
+    const nextState = rebuildCheckAllocations({
+      ...state,
+      checkGroupAllocations: nextGroups,
+    });
+    onSave(nextState, `تخصیص گروهی «${target.name}» لغو شد`);
+  }
+
+  function toggleCheck(id: string) {
+    setSelectedCheckIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleInvoice(id: string) {
+    setSelectedInvoiceIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function selectAllChecks() {
+    setSelectedCheckIds(new Set(candidateChecks.map(c => c.id)));
+  }
+
+  function clearAllChecks() {
+    setSelectedCheckIds(new Set());
+  }
+
+  function selectAllInvoices() {
+    setSelectedInvoiceIds(new Set(candidateInvoices.map(i => i.id)));
+  }
+
+  function clearAllInvoices() {
+    setSelectedInvoiceIds(new Set());
+  }
+
+  return (
+    <Dialog title="مدیریت تخصیص دستی گروهی چک به گروه فاکتورها" onClose={onClose}>
+      <div className="group-allocation-dialog-content" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <p className="helper-text" style={{ margin: 0, fontSize: 13, color: "#555" }}>
+          در این بخش می‌توانید دسته‌ای از چک‌ها را مستقیماً به دسته‌ای از فاکتورها تخصیص دهید (مثلاً چک‌های z1 تا z4 به فاکتورهای ۱۰۱۰ تا ۱۰۱۲).
+          محاسبه دیرکرد و تسویه ابتدا بین این دو دسته به ترتیب سررسید و تاریخ انجام شده و باقیمانده‌ها به چرخه عادی می‌روند.
+        </p>
+
+        <form onSubmit={handleCreateGroup} style={{ border: "1px solid #dcdcdc", borderRadius: 8, padding: 14, background: "#fafafa" }}>
+          <h4 style={{ margin: "0 0 10px", fontSize: 14, color: "#142d31" }}>ایجاد تخصیص گروهی جدید</h4>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+            <label>
+              طرف حساب / مشتری
+              <select value={partyId} onChange={e => {
+                setPartyId(e.target.value);
+                setSelectedCheckIds(new Set());
+                setSelectedInvoiceIds(new Set());
+              }}>
+                <option value="">همه طرف‌حساب‌ها</option>
+                {state.people.map(person => (
+                  <option key={person.id} value={person.id}>
+                    {person.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              عنوان یا نام گروه تخصیص *
+              <input
+                type="text"
+                value={groupName}
+                onChange={e => setGroupName(e.target.value)}
+                placeholder="مثلاً: تسویه چک‌های پاییز با فاکتورهای سری A"
+                required
+              />
+            </label>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 12 }}>
+            {/* انتخاب چک‌ها */}
+            <div style={{ border: "1px solid #e2e8f0", borderRadius: 6, padding: 10, background: "#fff" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <strong style={{ fontSize: 13 }}>۱. انتخاب چک‌ها ({selectedCheckIds.size} از {candidateChecks.length})</strong>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button type="button" className="text-button" onClick={selectAllChecks} style={{ fontSize: 11 }}>انتخاب همه</button>
+                  <button type="button" className="text-button" onClick={clearAllChecks} style={{ fontSize: 11, color: "#888" }}>لغو همه</button>
+                </div>
+              </div>
+              <div style={{ maxHeight: 180, overflowY: "auto", border: "1px solid #f0f0f0", borderRadius: 4, padding: 6 }}>
+                {candidateChecks.length ? (
+                  candidateChecks.map(check => (
+                    <label key={check.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0", cursor: "pointer", borderBottom: "1px dashed #f0f0f0", fontSize: 12 }}>
+                      <input
+                        type="checkbox"
+                        checked={selectedCheckIds.has(check.id)}
+                        onChange={() => toggleCheck(check.id)}
+                      />
+                      <span>
+                        <strong>چک {check.number}</strong> · {formatMoney(check.amount, state.settings.currency)}
+                        <small style={{ display: "block", color: "#666" }}>سررسید: {formatDate(check.dueDate)} ({check.status})</small>
+                      </span>
+                    </label>
+                  ))
+                ) : (
+                  <div style={{ fontSize: 12, color: "#888", textAlign: "center", padding: 12 }}>چکی برای این طرف حساب موجود نیست</div>
+                )}
+              </div>
+              <div style={{ marginTop: 6, fontSize: 11, fontWeight: 600, color: "#1b4d3e" }}>
+                مجموع مبلغ چک‌ها: {formatMoney(totalSelectedChecks, state.settings.currency)}
+              </div>
+            </div>
+
+            {/* انتخاب فاکتورها */}
+            <div style={{ border: "1px solid #e2e8f0", borderRadius: 6, padding: 10, background: "#fff" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <strong style={{ fontSize: 13 }}>۲. انتخاب فاکتورها ({selectedInvoiceIds.size} از {candidateInvoices.length})</strong>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button type="button" className="text-button" onClick={selectAllInvoices} style={{ fontSize: 11 }}>انتخاب همه</button>
+                  <button type="button" className="text-button" onClick={clearAllInvoices} style={{ fontSize: 11, color: "#888" }}>لغو همه</button>
+                </div>
+              </div>
+              <div style={{ maxHeight: 180, overflowY: "auto", border: "1px solid #f0f0f0", borderRadius: 4, padding: 6 }}>
+                {candidateInvoices.length ? (
+                  candidateInvoices.map(inv => (
+                    <label key={inv.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0", cursor: "pointer", borderBottom: "1px dashed #f0f0f0", fontSize: 12 }}>
+                      <input
+                        type="checkbox"
+                        checked={selectedInvoiceIds.has(inv.id)}
+                        onChange={() => toggleInvoice(inv.id)}
+                      />
+                      <span>
+                        <strong>فاکتور {inv.number}</strong> · {formatMoney(inv.amount, state.settings.currency)}
+                        <small style={{ display: "block", color: "#666" }}>
+                          تاریخ: {formatDate(inv.date)} · مانده: {formatMoney(Math.max(0, inv.amount - (inv.paidAmount || 0)), state.settings.currency)}
+                        </small>
+                      </span>
+                    </label>
+                  ))
+                ) : (
+                  <div style={{ fontSize: 12, color: "#888", textAlign: "center", padding: 12 }}>فاکتوری برای این طرف حساب موجود نیست</div>
+                )}
+              </div>
+              <div style={{ marginTop: 6, fontSize: 11, fontWeight: 600, color: "#1b4d3e" }}>
+                مجموع مبلغ فاکتورها: {formatMoney(totalSelectedInvoices, state.settings.currency)}
+              </div>
+            </div>
+          </div>
+
+          <div className="form-actions" style={{ marginTop: 8 }}>
+            <button type="submit" className="button button-primary">
+              <Check size={16} />
+              ثبت و اعمال تخصیص گروهی
+            </button>
+          </div>
+        </form>
+
+        {/* لیست تخصیص‌های قبلی */}
+        <div>
+          <h4 style={{ margin: "0 0 8px", fontSize: 14, color: "#142d31" }}>
+            تخصیص‌های گروهی تعریف‌شده ({existingGroups.length})
+          </h4>
+          {existingGroups.length ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {existingGroups.map(group => {
+                const person = state.people.find(p => p.id === group.partyId);
+                const checkList = state.checks.filter(c => group.checkIds.includes(c.id));
+                const invoiceList = state.invoices.filter(i => group.invoiceIds.includes(i.id));
+                const groupChecksAmount = checkList.reduce((sum, c) => sum + c.amount, 0);
+                const groupInvoicesAmount = invoiceList.reduce((sum, i) => sum + i.amount, 0);
+                return (
+                  <div key={group.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", border: "1px solid #d4ded9", borderRadius: 6, background: "#fff" }}>
+                    <div>
+                      <strong style={{ fontSize: 13, color: "#142d31" }}>{group.name}</strong>
+                      {person && <span className="soft-tag" style={{ marginRight: 8 }}>طرف حساب: {person.name}</span>}
+                      <small style={{ display: "block", color: "#666", marginTop: 4 }}>
+                        چک‌ها ({checkList.length} فقره به مبلغ {formatMoney(groupChecksAmount, state.settings.currency)}): {checkList.map(c => `چک ${c.number}`).join("، ") || "—"}
+                      </small>
+                      <small style={{ display: "block", color: "#666", marginTop: 2 }}>
+                        فاکتورها ({invoiceList.length} فقره به مبلغ {formatMoney(groupInvoicesAmount, state.settings.currency)}): {invoiceList.map(i => `فاکتور ${i.number}`).join("، ") || "—"}
+                      </small>
+                    </div>
+                    <button
+                      type="button"
+                      className="button button-ghost button-small"
+                      style={{ color: "#d9534f" }}
+                      onClick={() => handleDeleteGroup(group.id)}
+                      title="لغو و حذف این تخصیص گروهی"
+                    >
+                      <Trash2 size={14} />
+                      لغو تخصیص
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: "#888", padding: 12, textAlign: "center", border: "1px dashed #dcdcdc", borderRadius: 6 }}>
+              هنوز هیچ تخصیص گروهی ثبت نشده است.
+            </div>
+          )}
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
 function BankAccounts({
   state,
   onSave,
@@ -6507,6 +6843,7 @@ function Checks({
   );
   const [checkPage, setCheckPage] = useState(1);
   const [printingChecks, setPrintingChecks] = useState(false);
+  const [groupAllocOpen, setGroupAllocOpen] = useState(false);
   const checkPageSize = 25;
   const blank = {
     number: "",
@@ -6939,8 +7276,16 @@ function Checks({
           <small>وصول، برگشت و معکوس‌سازی</small>
         </div>
       </div>
-      <div className="print-customer-summary">
-        خلاصه وضعیت چک‌های {personName(state, checkPartyFilter)}
+      <div className="print-customer-summary print-roll-banner">
+        <div className="print-roll-title">
+          <span>کارگاه صنعتی — گزارش طوماری چک‌ها و وضعیت تسویه فاکتورها (افقی)</span>
+          <strong>{checkPartyFilter === "همه" ? "کلیه چک‌ها و طرف‌حساب‌ها" : `طرف حساب: ${personName(state, checkPartyFilter)}`}</strong>
+        </div>
+        <div className="print-roll-meta">
+          <span>تاریخ گزارش: {todayJalali()}</span>
+          <span>تعداد چک‌ها: {formatNumber(visibleChecks.length)} فقره</span>
+          <span>مجموع مبلغ چک‌ها: {formatMoney(visibleChecks.reduce((sum, c) => sum + c.amount, 0), state.settings.currency)}</span>
+        </div>
       </div>
       <div className="toolbar check-filters">
         <label>
@@ -7028,6 +7373,13 @@ function Checks({
           {formatNumber(state.checks.length)} چک
         </span>
         <button
+          type="button"
+          className="button button-ghost button-small"
+          onClick={() => setGroupAllocOpen(true)}
+        >
+          تخصیص گروهی چک به فاکتور
+        </button>
+        <button
           className="button button-ghost button-small"
           onClick={exportChecks}
         >
@@ -7036,30 +7388,7 @@ function Checks({
         <button
           className="button button-ghost button-small"
           onClick={() => {
-            if (checkPartyFilter === "همه") {
-              window.alert("برای حفظ محرمانگی، ابتدا یک مشتری را برای گزارش چاپی انتخاب کنید.");
-              return;
-            }
             setPrintingChecks(true);
-            setCheckPage(1);
-            setExpandedCheckIds(new Set(visibleChecks.map(check => check.id)));
-            window.setTimeout(
-              () => printWithTarget("checks", false, () => setPrintingChecks(false)),
-              0
-            );
-          }}
-        >
-          چاپ خلاصه مشتری
-        </button>
-        <button
-          className="button button-ghost button-small"
-          onClick={() => {
-            if (checkPartyFilter === "همه") {
-              window.alert("برای حفظ محرمانگی، ابتدا یک مشتری را برای گزارش چاپی انتخاب کنید.");
-              return;
-            }
-            setPrintingChecks(true);
-            setCheckPage(1);
             setExpandedCheckIds(new Set(visibleChecks.map(check => check.id)));
             window.setTimeout(
               () => printWithTarget("checks", true, () => setPrintingChecks(false)),
@@ -7067,7 +7396,7 @@ function Checks({
             );
           }}
         >
-          چاپ خلاصه مشتری (افقی)
+          چاپ طومار چک‌ها برای مشتری (افقی)
         </button>
         <button
           className="button button-primary button-small"
@@ -7339,115 +7668,129 @@ function Checks({
                       {expanded && (
                         <tr className="allocation-detail-row">
                           <td colSpan={8}>
-                            {checkAllocations.length ? (
-                              checkAllocations.map(item => {
-                                const invoice = state.invoices.find(
-                                  row => row.id === item.invoiceId
-                                );
-                                const checkAllocated = checkAllocations.reduce(
-                                  (sum, row) => sum + row.amount,
-                                  0
-                                );
-                                const invoiceAllocated = state.checks
-                                  .flatMap(row =>
-                                    allocationDetails.filter(
-                                      allocation =>
-                                        allocation.checkId === row.id
-                                    )
-                                  )
-                                  .filter(
-                                    allocation =>
-                                      allocation.invoiceId === item.invoiceId
-                                  )
-                                  .reduce(
-                                    (sum, row) => sum + row.principalAmount,
-                                    0
-                                  );
-                                const allocationBalance =
-                                  allocationBalances.get(
-                                    `${item.checkId}:${item.invoiceId}`
-                                  );
-                                const profit = invoice
-                                  ? calculateEffectiveProfitForAllocation(state, invoice, item, check)
-                                  : null;
+                            <div className="check-accordion-box">
+                              {(() => {
+                                const person = state.people.find(p => p.id === check.partyId);
+                                const checkGroup = state.checkGroupAllocations?.find(g => g.checkIds.includes(check.id));
                                 return (
-                                  <div
-                                    className="allocation-detail-card"
-                                    key={`${item.checkId}-${item.invoiceId}`}
-                                  >
-                                    <strong>
-                                      فاکتور {invoice?.number || "—"} · چک{" "}
-                                      {formatMoney(
-                                        check.amount,
-                                        state.settings.currency
-                                      )}
-                                    </strong>
-                                    <span>
-                                      مبلغ تخصیص:{" "}
-                                      {formatMoney(
-                                        item.amount,
-                                        state.settings.currency
-                                      )}
-                                    </span>
-                                    <span>
-                                      اصل:{" "}
-                                      {formatMoney(
-                                        item.principalAmount,
-                                        state.settings.currency
-                                      )}
-                                    </span>
-                                    <span className="print-private">
-                                      هزینه دیرکرد:{" "}
-                                      {formatMoney(
-                                        item.profit,
-                                        state.settings.currency
-                                      )}
-                                    </span>
-                                    {profit && (
-                                      <>
-                                        <span className="print-private">
-                                          سود ظاهری: {formatMoney(profit.apparentProfit, state.settings.currency)} · {formatNumber(profit.apparentRate * 100)}٪
-                                        </span>
-                                        <span className="print-private">
-                                          سود مؤثر: {formatMoney(profit.effectiveProfit, state.settings.currency)} · {formatNumber(profit.effectiveRate * 100)}٪ · وصول {formatDate(profit.collectionDate)}
-                                        </span>
-                                      </>
+                                  <div className="invoice-customer-info-strip">
+                                    <div>
+                                      <strong>طرف حساب / صادرکننده:</strong> {person?.name || "نامشخص"} {person?.code ? `(کد: ${person.code})` : ""}
+                                    </div>
+                                    {person?.phone && (
+                                      <div><strong>شماره تماس:</strong> {person.phone}</div>
                                     )}
-                                    <span>
-                                      تعداد روز: {" "}
-                                      {formatNumber(item.days || 0)} روز
-                                    </span>
-                                    <span>
-                                      مانده چک پس از تخصیص:{" "}
-                                      {formatMoney(
-                                        allocationBalance?.remainingCheck ??
-                                          Math.max(
-                                            0,
-                                            check.amount - checkAllocated
-                                          ),
-                                        state.settings.currency
-                                      )}
-                                    </span>
-                                    <span>
-                                      مانده فاکتور پس از تخصیص:{" "}
-                                      {formatMoney(
-                                        allocationBalance?.remainingInvoice ??
-                                          Math.max(
-                                            0,
-                                            (invoice?.amount || 0) -
-                                              invoiceAllocated
-                                          ),
-                                        state.settings.currency
-                                      )}
-                                    </span>
+                                    {check.bank && (
+                                      <div><strong>بانک:</strong> {check.bank}</div>
+                                    )}
+                                    {checkGroup && (
+                                      <div><span className="soft-tag">تخصیص گروهی: {checkGroup.name}</span></div>
+                                    )}
+                                    <div>
+                                      <strong>مبلغ چک:</strong> {formatMoney(check.amount, state.settings.currency)}
+                                    </div>
+                                    <div>
+                                      <strong>سررسید:</strong> {formatDate(check.dueDate)}
+                                    </div>
+                                    <div>
+                                      <strong>وضعیت:</strong> {check.status}
+                                    </div>
                                   </div>
                                 );
-                              })
-                            ) : (
-                              <span className="muted-cell">
-                                برای این چک تخصیصی ثبت نشده است.
-                              </span>
-                            )}
+                              })()}
+
+                              {checkAllocations.length ? (
+                                <div className="roll-subtable-wrap">
+                                  <table className="roll-subtable">
+                                    <thead>
+                                      <tr>
+                                        <th style={{ width: "16%" }}>شماره و تاریخ فاکتور</th>
+                                        <th style={{ width: "14%" }}>مبلغ فاکتور</th>
+                                        <th style={{ width: "10%" }}>روزهای دیرکرد</th>
+                                        <th style={{ width: "15%" }}>نرخ و هزینه دیرکرد</th>
+                                        <th style={{ width: "17%" }}>مبلغ تسویه از این چک</th>
+                                        <th style={{ width: "14%" }}>مانده فاکتور پس از تخصیص</th>
+                                        <th style={{ width: "14%" }}>مانده چک جهت انتقال</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {checkAllocations.map(item => {
+                                        const invoice = state.invoices.find(
+                                          row => row.id === item.invoiceId
+                                        );
+                                        const allocationBalance =
+                                          allocationBalances.get(
+                                            `${item.checkId}:${item.invoiceId}`
+                                          );
+                                        const rule =
+                                          state.paymentRules.find(
+                                            r => r.id === invoice?.paymentRuleId
+                                          ) || state.paymentRules.find(r => r.active);
+                                        const probe = invoice
+                                          ? calculateLateProfit(
+                                              check,
+                                              rule,
+                                              invoice.date,
+                                              invoice.amount,
+                                              state.settings.dayBasis
+                                            )
+                                          : null;
+                                        return (
+                                          <tr key={`${item.checkId}-${item.invoiceId}`}>
+                                            <td>
+                                              <strong>فاکتور {invoice?.number || "—"}</strong>
+                                              <small style={{ display: "block", color: "#555" }}>
+                                                تاریخ صدور: {formatDate(invoice?.date || "")}
+                                              </small>
+                                            </td>
+                                            <td>{invoice ? formatMoney(invoice.amount, state.settings.currency) : "—"}</td>
+                                            <td>{formatNumber(item.days || 0)} روز</td>
+                                            <td>
+                                              {item.profit > 0 ? (
+                                                <span>
+                                                  {formatMoney(item.profit, state.settings.currency)}
+                                                  <small style={{ display: "block", color: "#555" }}>
+                                                    ({formatNumber((probe?.rate || 0) * 100)}٪)
+                                                  </small>
+                                                </span>
+                                              ) : (
+                                                <span className="muted-cell">بدون دیرکرد (۰٪)</span>
+                                              )}
+                                            </td>
+                                            <td>
+                                              <strong>{formatMoney(item.amount, state.settings.currency)}</strong>
+                                              <small style={{ display: "block", color: "#555" }}>
+                                                اصل فاکتور: {formatMoney(item.principalAmount, state.settings.currency)}
+                                              </small>
+                                            </td>
+                                            <td>
+                                              <strong>
+                                                {formatMoney(
+                                                  allocationBalance?.remainingInvoice ?? 0,
+                                                  state.settings.currency
+                                                )}
+                                              </strong>
+                                            </td>
+                                            <td>
+                                              <strong>
+                                                {formatMoney(
+                                                  allocationBalance?.remainingCheck ?? 0,
+                                                  state.settings.currency
+                                                )}
+                                              </strong>
+                                            </td>
+                                          </tr>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              ) : (
+                                <span className="muted-cell" style={{ display: "block", marginTop: 4 }}>
+                                  هیچ فاکتوری به این چک تخصیص نیافته است.
+                                </span>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       )}
@@ -7740,6 +8083,15 @@ function Checks({
             }) && <p>تاریخی برای این چک ثبت نشده است.</p>}
           </div>
         </Dialog>
+      )}
+      {groupAllocOpen && (
+        <GroupAllocationDialog
+          open={groupAllocOpen}
+          onClose={() => setGroupAllocOpen(false)}
+          state={state}
+          onSave={onSave}
+          defaultPartyId={checkPartyFilter !== "همه" ? checkPartyFilter : ""}
+        />
       )}
     </div>
   );

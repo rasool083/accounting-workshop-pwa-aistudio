@@ -596,6 +596,97 @@ describe("FIFO settlement balances", () => {
     expect(releasedPartner.partnerObligationEvents.at(-1)).toEqual(expect.objectContaining({ kind: "reversal", amount: -60 }));
     expect(rebuildPurchasePayables(releasedPartner).invoices[0]).toEqual(expect.objectContaining({ status: "باز", paidAmount: 0 }));
   });
+
+  it("calculates late profit and multi-check allocation matching user specification example", () => {
+    // پله تعریف شده: تا ۳۰ روز ۰٪، تا ۳۶۵ روز ۶٪ ماهانه (۰.۲٪ در روز)
+    const rule: PaymentRule = {
+      id: "rule-tiered",
+      name: "قانون دیرکرد پله‌ای",
+      dayBasis: 30,
+      graceDays: 0,
+      active: true,
+      tiers: [
+        { maxDays: 30, rate: 0 },
+        { maxDays: 365, rate: 0.06 },
+      ],
+    };
+
+    // فاکتور A: 201,600,000 در تاریخ 1405/06/07
+    // چک ۱: 200,000,000 در سررسید 1405/07/30 (54 روز دیرکرد: شهریور 24 روز + مهر 30 روز = 54 روز)
+    const check1: Check = {
+      id: "chk-1",
+      number: "CHK1",
+      partyId: "customer-1",
+      receivedDate: "1405/06/07",
+      dueDate: "1405/07/30",
+      amount: 200_000_000,
+      status: "نزد ما",
+    };
+
+    const probe1 = calculateLateProfit(check1, rule, "1405/06/07", 201_600_000, 30);
+    expect(probe1.days).toBe(54);
+    expect(probe1.overdueDays).toBe(54);
+    expect(probe1.rate).toBe(0.06);
+    // 54 * (0.06 / 30) = 0.108 (10.8%)
+    expect(probe1.profit).toBeCloseTo(21_772_800, 0);
+    expect(probe1.settled).toBeCloseTo(223_372_800, 0);
+    expect(probe1.remaining).toBeCloseTo(23_372_800, 0);
+    // مانده معادل روز صدور فاکتور: 23,372,800 / 1.108 = 21,094,584.84
+    expect(probe1.remainingBase).toBeCloseTo(21_094_584.84, 1);
+
+    // تسویه در settleChecksFIFO:
+    const invoiceA: Invoice = {
+      id: "inv-A",
+      number: "INV-A",
+      type: "فروش",
+      date: "1405/06/07",
+      partyId: "customer-1",
+      amount: 201_600_000,
+      paidAmount: 0,
+      status: "باز",
+      paymentRuleId: "rule-tiered",
+      allocations: [],
+      items: [],
+    };
+
+    // چک ۲ با سررسید با فاصله ۸۰ روز نسبت به فاکتور
+    // 1405/06/07 + 80 روز: شهریور 24 روز + مهر 30 روز + آبان 26 روز = 1405/08/26
+    const check2: Check = {
+      id: "chk-2",
+      number: "CHK2",
+      partyId: "customer-1",
+      receivedDate: "1405/06/07",
+      dueDate: "1405/08/26",
+      amount: 50_000_000,
+      status: "نزد ما",
+    };
+
+    const settlements = settleChecksFIFO([check1, check2], [invoiceA], [rule], 30);
+    expect(settlements).toHaveLength(2);
+
+    // تسویه چک اول: 200,000,000 پرداخت شده
+    const s1 = settlements[0];
+    expect(s1.checkId).toBe("chk-1");
+    expect(s1.amount).toBe(200_000_000);
+    // اصل تسویه شده: 200,000,000 / 1.108 = 180,505,415.16
+    expect(s1.principalAmount).toBeCloseTo(180_505_415.16, 1);
+    expect(s1.profit).toBeCloseTo(19_494_584.84, 1);
+
+    // تسویه چک دوم: مانده پایه 21,094,584.84 با دیرکرد 80 روز (16%) برابر با 24,469,718.41
+    const s2 = settlements[1];
+    expect(s2.checkId).toBe("chk-2");
+    expect(s2.principalAmount).toBeCloseTo(21_094_584.84, 1);
+    expect(s2.profit).toBeCloseTo(3_375_133.57, 1);
+    expect(s2.amount).toBeCloseTo(24_469_718.41, 1);
+
+    // باقیمانده چک ۲: 50,000,000 - 24,469,718.41 = 25,530,281.59
+    const remainingCheck2 = 50_000_000 - s2.amount;
+    expect(remainingCheck2).toBeCloseTo(25_530_281.59, 1);
+
+    // فاکتور ۱۰۰٪ تسویه شده و بیشتر از ۱۰۰٪ تسویه نمی‌شود (قانون ۱)
+    const totalPrincipal = s1.principalAmount + s2.principalAmount;
+    expect(totalPrincipal).toBeCloseTo(201_600_000, 0);
+  });
 });
 
 describe("Jalali calendar", () => {
