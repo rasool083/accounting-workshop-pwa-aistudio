@@ -687,6 +687,56 @@ describe("FIFO settlement balances", () => {
     const totalPrincipal = s1.principalAmount + s2.principalAmount;
     expect(totalPrincipal).toBeCloseTo(201_600_000, 0);
   });
+
+  it("handles multi-tier progression and unsorted tiers correctly", () => {
+    // پله‌های چندگانه با ترتیب نامنظم برای تست مرتب‌سازی خودکار
+    const multiTierRule: PaymentRule = {
+      id: "multi-tier",
+      name: "چندپله‌ای نامرتب",
+      dayBasis: 30,
+      graceDays: 0,
+      active: true,
+      tiers: [
+        { maxDays: 365, rate: 0.06 }, // پله ۳: تا ۳۶۵ روز ۶٪
+        { maxDays: 30, rate: 0 },     // پله ۱: تا ۳۰ روز ۰٪
+        { maxDays: 60, rate: 0.03 },  // پله ۲: تا ۶۰ روز ۳٪
+      ],
+    };
+
+    const makeCheckWithDue = (dueDate: string): Check => ({
+      id: `chk-${dueDate}`,
+      number: `CHK-${dueDate}`,
+      amount: 100_000_000,
+      dueDate,
+      status: "نزد ما",
+    });
+
+    // ۱. کمتر از ۳۰ روز: پله ۱ (۰٪)
+    const probe20 = calculateLateProfit(makeCheckWithDue("1405/02/01"), multiTierRule, "1405/01/12", 100_000_000, 30);
+    expect(probe20.days).toBe(20);
+    expect(probe20.rate).toBe(0);
+    expect(probe20.profit).toBe(0);
+
+    // ۲. بین ۳۰ تا ۶۰ روز (مثلاً ۴۵ روز): پله ۲ (۳٪ ماهانه = ۰.۱٪ در روز)
+    // ۴۵ * (۰.۰۳ / ۳۰) = ۴.۵٪ -> سود: ۴,۵۰۰,۰۰۰
+    const probe45 = calculateLateProfit(makeCheckWithDue("1405/02/15"), multiTierRule, "1405/01/01", 100_000_000, 30);
+    expect(probe45.days).toBe(45);
+    expect(probe45.rate).toBe(0.03);
+    expect(probe45.profit).toBeCloseTo(4_500_000, 0);
+
+    // ۳. بین ۶۰ تا ۳۶۵ روز (مثلاً ۱۰۰ روز): پله ۳ (۶٪ ماهانه = ۰.۲٪ در روز)
+    // ۱۰۰ * (۰.۰۶ / ۳۰) = ۲۰٪ -> سود: ۲۰,۰۰۰,۰۰۰
+    const probe100 = calculateLateProfit(makeCheckWithDue("1405/04/08"), multiTierRule, "1405/01/01", 100_000_000, 30);
+    expect(probe100.days).toBe(100);
+    expect(probe100.rate).toBe(0.06);
+    expect(probe100.profit).toBeCloseTo(20_000_000, 0);
+
+    // ۴. فراتر از حداکثر پله (مثلاً ۴۰۰ روز): اعمال آخرین و بالاترین پله (۶٪)
+    const probe400 = calculateLateProfit(makeCheckWithDue("1406/02/05"), multiTierRule, "1405/01/01", 100_000_000, 30);
+    expect(probe400.days).toBe(400);
+    expect(probe400.rate).toBe(0.06);
+    expect(probe400.profit).toBeCloseTo(80_000_000, 0);
+  });
 });
 
 describe("Jalali calendar", () => {

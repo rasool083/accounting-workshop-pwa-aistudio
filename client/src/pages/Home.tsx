@@ -6780,6 +6780,21 @@ function PaymentRules({
                     }
                     placeholder="توضیح پله"
                   />
+                  {form.tiers.length > 1 && (
+                    <button
+                      type="button"
+                      className="icon-button"
+                      title="حذف این پله"
+                      onClick={() =>
+                        setForm({
+                          ...form,
+                          tiers: form.tiers.filter((_, i) => i !== index),
+                        })
+                      }
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  )}
                 </div>
               ))}
             </div>

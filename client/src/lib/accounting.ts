@@ -954,6 +954,17 @@ const seedState: AppState = {
       graceDays: 0,
       tiers: [{ id: "tier-1", maxDays: 30, rate: 0, note: "بدون هزینه دیرکرد" }],
     },
+    {
+      id: "rule-credit-standard",
+      name: "فروش اعتباری پله‌ای (تا ۳۰ روز ۰٪، سالانه ۶٪ ماهانه)",
+      active: true,
+      dayBasis: 30,
+      graceDays: 0,
+      tiers: [
+        { id: "tier-credit-1", maxDays: 30, rate: 0, note: "تا ۳۰ روز معاف از دیرکرد (۰٪)" },
+        { id: "tier-credit-2", maxDays: 365, rate: 0.06, note: "۶٪ ماهانه (۰.۲٪ در روز)" },
+      ],
+    },
   ],
   transactions: [],
   checks: [],
@@ -2981,16 +2992,18 @@ export function calculateLateProfit(
     graceDays: 0,
     tiers: [{ maxDays: 9999, rate: 0 }],
   };
+  const sortedTiers = [...activeRule.tiers].sort((a, b) => a.maxDays - b.maxDays);
   const tier =
-    [...activeRule.tiers]
-      .sort((a, b) => a.maxDays - b.maxDays)
-      .find(item => days <= item.maxDays) ||
-    activeRule.tiers[activeRule.tiers.length - 1];
+    sortedTiers.find(item => days <= item.maxDays) ||
+    sortedTiers[sortedTiers.length - 1];
   const rate = tier?.rate || 0;
+  const hasZeroRateTier = sortedTiers.some(t => t.rate === 0 && t.maxDays > 0);
   const overdueDays = rate > 0
-    ? (activeRule.graceDays > 0 && activeRule.tiers.length === 1
-        ? Math.max(0, days - activeRule.graceDays)
-        : days)
+    ? (hasZeroRateTier
+        ? days // طبق قاعده کاربر: اگر پله تنفس با نرخ صفر تعیین شده بود، با عبور از آن کل روزها مشمول دیرکرد است
+        : (activeRule.graceDays > 0 && activeRule.tiers.length === 1
+            ? Math.max(0, days - activeRule.graceDays)
+            : days))
     : 0;
   const basis =
     dayBasisOverride === "شمسی"
