@@ -333,6 +333,7 @@ export interface Transaction {
 export interface Check {
   id: string;
   number: string;
+  sayadNumber?: string;
   partyId?: string;
   targetInvoiceId?: string;
   dueDate: string;
@@ -2484,6 +2485,7 @@ export function getSettlementBalances(
 
 export interface EffectiveProfitBreakdown {
   collectionDate: string;
+  isCollected?: boolean;
   apparentCost: number;
   currentCost: number;
   apparentProfit: number;
@@ -2504,8 +2506,9 @@ export function calculateEffectiveProfitForAllocation(
   allocation: Pick<FIFOSettlement, "amount" | "principalAmount"> | CheckAllocation,
   check?: Check
 ): EffectiveProfitBreakdown | null {
-  const collectionDate = check?.collectedDate;
-  if (!collectionDate || check?.status !== "وصول شده") return null;
+  const isCollected = check?.status === "وصول شده" && Boolean(check?.collectedDate);
+  const collectionDate = check?.collectedDate || (isCollected ? check?.dueDate : undefined);
+  const targetDate = collectionDate || todayJalali();
   const principalAmount = allocation.principalAmount ?? allocation.amount;
   const ratio = invoice.amount > 0
     ? Math.min(1, Math.max(0, principalAmount / invoice.amount))
@@ -2514,7 +2517,14 @@ export function calculateEffectiveProfitForAllocation(
   let currentUnitCostKnown = true;
   let apparentCost = 0;
   let currentCost = 0;
-  for (const item of invoice.items) {
+
+  const items = invoice.items || [];
+  if (items.length === 0) {
+    apparentUnitCostKnown = false;
+    currentUnitCostKnown = false;
+  }
+
+  for (const item of items) {
     const quantityBase = Number(item.quantityBase ?? item.quantity) || 0;
     const saleProduction = [...state.productionRecords]
       .filter(record =>
@@ -2526,29 +2536,33 @@ export function calculateEffectiveProfitForAllocation(
         jalaliDateKey(b.date).localeCompare(jalaliDateKey(a.date)) ||
         b.id.localeCompare(a.id)
       )[0];
-    const saleUnitCost = Number(item.unitCostAtSale ?? saleProduction?.unitCost);
-    if (!Number.isFinite(saleUnitCost) || saleUnitCost < 0) apparentUnitCostKnown = false;
-    else apparentCost += quantityBase * saleUnitCost;
-    const production = [...state.productionRecords]
+    const product = state.products.find(p => p.id === item.productId);
+    const saleUnitCost = Number(item.unitCostAtSale ?? saleProduction?.unitCost ?? (product as { buyPrice?: number })?.buyPrice ?? product?.price ?? 0);
+    if (!Number.isFinite(saleUnitCost) || saleUnitCost <= 0) apparentUnitCostKnown = false;
+    apparentCost += quantityBase * saleUnitCost;
+
+    const collectionProduction = [...state.productionRecords]
       .filter(record =>
         record.outputProductId === item.productId &&
-        jalaliDateKey(record.date) <= jalaliDateKey(collectionDate) &&
+        jalaliDateKey(record.date) <= jalaliDateKey(targetDate) &&
         Number.isFinite(record.unitCost) && record.unitCost >= 0
       )
       .sort((a, b) =>
         jalaliDateKey(b.date).localeCompare(jalaliDateKey(a.date)) ||
         b.id.localeCompare(a.id)
       )[0];
-    const currentUnitCost = production?.unitCost ?? saleUnitCost;
-    if (!Number.isFinite(currentUnitCost) || currentUnitCost < 0) currentUnitCostKnown = false;
-    else currentCost += quantityBase * currentUnitCost;
+    const currentUnitCost = collectionProduction?.unitCost ?? saleUnitCost;
+    if (!Number.isFinite(currentUnitCost) || currentUnitCost <= 0) currentUnitCostKnown = false;
+    currentCost += quantityBase * currentUnitCost;
   }
+
   const allocatedApparentCost = apparentCost * ratio;
   const allocatedCurrentCost = currentCost * ratio;
   const apparentProfit = allocation.amount - allocatedApparentCost;
   const effectiveProfit = allocation.amount - allocatedCurrentCost;
   return {
-    collectionDate,
+    collectionDate: collectionDate || "",
+    isCollected,
     apparentCost: allocatedApparentCost,
     currentCost: allocatedCurrentCost,
     apparentProfit,
@@ -2593,7 +2607,7 @@ export function buildCollectionProfitReport(state: AppState): CollectionProfitRe
     const check = state.checks.find(item => item.id === allocation.checkId);
     if (!invoice || !check || invoice.type !== "فروش" || invoice.status === "باطل") return;
     const breakdown = calculateEffectiveProfitForAllocation(state, invoice, allocation, check);
-    if (!breakdown) return;
+    if (!breakdown || !breakdown.collectionDate || !breakdown.isCollected) return;
         const parts = breakdown.collectionDate.split("/");
         const year = parts[0] || "نامشخص";
         const month = parts.length >= 2 ? `${year}/${parts[1]}` : year;

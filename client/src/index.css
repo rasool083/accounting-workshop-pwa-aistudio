@@ -3473,6 +3473,7 @@ tr:last-child td {
   body.print-invoice .invoice-detail * {
     visibility: visible !important;
   }
+  .print-private,
   body.print-invoice .print-private,
   body.print-checks .print-private,
   body.print-invoices-roll .print-private {
