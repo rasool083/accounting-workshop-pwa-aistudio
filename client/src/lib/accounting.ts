@@ -1385,8 +1385,10 @@ export function formatMoney(value: number, currency = "تومان") {
   return `${new Intl.NumberFormat("fa-IR").format(Math.round(value || 0))} ${currency}`;
 }
 
-export function formatNumber(value: number) {
-  return new Intl.NumberFormat("fa-IR").format(value || 0);
+export function formatNumber(value: number, maxFractionDigits?: number) {
+  return new Intl.NumberFormat("fa-IR", {
+    maximumFractionDigits: maxFractionDigits !== undefined ? maxFractionDigits : 3,
+  }).format(value || 0);
 }
 
 /**
@@ -2196,11 +2198,25 @@ export interface FIFOSettlement {
   principalAmount: number;
   profit: number;
   days: number;
+  dailyRate?: number;
+  totalRate?: number;
+  invoiceBaseAmount?: number;
+  lateFee?: number;
+  invoiceWithLateFee?: number;
+  remainingInvoiceWithFee?: number;
+  remainingInvoiceBase?: number;
+  remainingCheck?: number;
 }
 
 export interface FIFOSettlementBalance {
   remainingCheck: number;
   remainingInvoice: number;
+  remainingInvoiceWithFee?: number;
+  invoiceWithLateFee?: number;
+  lateFee?: number;
+  totalRate?: number;
+  dailyRate?: number;
+  invoiceBaseAmount?: number;
 }
 
 // Interest and unit-conversion calculations can leave a harmless fraction of
@@ -2269,25 +2285,79 @@ export function settleChecksFIFO(
     const rule =
       paymentRules.find(item => item.id === invoice.paymentRuleId) ||
       paymentRules.find(item => item.active);
-    const probe = calculateLateProfit(
-      { ...check, amount: checkRemaining },
-      rule,
-      invoice.date,
-      baseRemaining,
-      dayBasis
-    );
-    const amount = Math.min(checkRemaining, probe.settled);
-    const factor = baseRemaining > 0 ? probe.settled / baseRemaining : 1;
-    const calculatedPrincipal = Math.min(
-      baseRemaining,
-      amount / Math.max(1, factor)
-    );
-    const principalAmount =
-      baseRemaining - calculatedPrincipal <= FIFO_EPSILON
-        ? baseRemaining
-        : calculatedPrincipal;
-    const profit = Math.max(0, amount - principalAmount);
-    if (amount <= FIFO_EPSILON || principalAmount <= FIFO_EPSILON) return false;
+
+    const effectiveInvoiceDate = invoice.date;
+    const days = effectiveInvoiceDate && check.dueDate
+      ? jalaliDayDifference(effectiveInvoiceDate, check.dueDate)
+      : 0;
+    const activeRule = rule || {
+      dayBasis: 30,
+      graceDays: 0,
+      tiers: [{ maxDays: 9999, rate: 0 }],
+    };
+    const sortedTiers = [...activeRule.tiers].sort((a, b) => a.maxDays - b.maxDays);
+    const tier =
+      sortedTiers.find(item => days <= item.maxDays) ||
+      sortedTiers[sortedTiers.length - 1];
+    const monthlyRate = tier?.rate || 0;
+    const hasZeroRateTier = sortedTiers.some(t => t.rate === 0 && t.maxDays > 0);
+    const overdueDays = monthlyRate > 0
+      ? (hasZeroRateTier
+          ? days // طبق قاعده صریح کاربر: با عبور از آستانه پله صفر، کل روزها مشمول دیرکرد است
+          : (activeRule.graceDays > 0 && activeRule.tiers.length === 1
+              ? Math.max(0, days - activeRule.graceDays)
+              : days))
+      : 0;
+    const basis =
+      dayBasis === "شمسی"
+        ? jalaliMonthDayBasis(effectiveInvoiceDate || check.receivedDate)
+        : Math.max(1, Number(dayBasis) || activeRule.dayBasis || 30);
+
+    // ۱. محاسبه درصد روزانه: r = monthlyRate / basis
+    const dailyRate = basis > 0 ? monthlyRate / basis : 0;
+    // ۲. درصد کل روزهای دیرکرد: Z = r * y
+    const totalRate = dailyRate * overdueDays;
+
+    // ۳. مبلغ فاکتور: P
+    const P = baseRemaining;
+    // هزینه دیرکرد کل تا این سررسید: P * Z
+    const lateFee = P * totalRate;
+    // مبلغ فاکتور بعلاوه دیرکرد کل در موعد سررسید چک: K = P * (1 + Z)
+    const K = P * (1 + totalRate);
+    // مبلغ چک در دسترس: X
+    const X = checkRemaining;
+
+    let amount = 0;
+    let principalAmount = 0;
+    let profit = 0;
+    let L = 0; // باقیمانده فاکتور بعلاوه دیرکرد در موعد سررسید چک
+    let G = 0; // باقیمانده خالص فاکتور به ارزش پایه
+    let nextCheckRemaining = 0;
+
+    if (X >= K - FIFO_EPSILON) {
+      // حالت ب: چک بزرگتر یا مساوی کل فاکتور با دیرکرد است -> فاکتور ۱۰۰٪ تسویه می‌شود
+      amount = K;
+      principalAmount = P;
+      profit = lateFee;
+      L = 0;
+      G = 0;
+      nextCheckRemaining = Math.max(0, X - K);
+    } else {
+      // حالت الف: چک کمتر از کل فاکتور با دیرکرد است (مطابق فرمول کاربر)
+      // کل مبلغ چک تخصیص می‌یابد
+      amount = X;
+      // باقیمانده فاکتور بعلاوه دیرکرد در موعد سررسید چک: L = K - X
+      L = Math.max(0, K - X);
+      // باقیمانده خالص فاکتور: G = L / (1 + Z)
+      G = totalRate > 0 ? L / (1 + totalRate) : L;
+      // اصل تسویه شده از فاکتور با این چک: P - G
+      principalAmount = Math.max(0, P - G);
+      // سهم سود/دیرکرد تسویه شده از این چک: amount - principalAmount
+      profit = Math.max(0, amount - principalAmount);
+      nextCheckRemaining = 0;
+    }
+
+    if (amount <= FIFO_EPSILON || (principalAmount <= FIFO_EPSILON && profit <= FIFO_EPSILON)) return false;
 
     settlements.push({
       checkId: check.id,
@@ -2295,14 +2365,18 @@ export function settleChecksFIFO(
       amount,
       principalAmount,
       profit,
-      days: probe.days,
+      days,
+      dailyRate,
+      totalRate,
+      invoiceBaseAmount: P,
+      lateFee,
+      invoiceWithLateFee: K,
+      remainingInvoiceWithFee: L,
+      remainingInvoiceBase: G,
+      remainingCheck: nextCheckRemaining,
     });
-    const invoiceRemaining = Math.max(0, baseRemaining - principalAmount);
-    remainingByInvoice.set(
-      invoice.id,
-      invoiceRemaining <= FIFO_EPSILON ? 0 : invoiceRemaining
-    );
-    const nextCheckRemaining = Math.max(0, checkRemaining - amount);
+    const invoiceRemaining = G <= FIFO_EPSILON ? 0 : G;
+    remainingByInvoice.set(invoice.id, invoiceRemaining);
     remainingByCheck.set(
       check.id,
       nextCheckRemaining <= FIFO_EPSILON ? 0 : nextCheckRemaining
@@ -2380,19 +2454,29 @@ export function getSettlementBalances(
   );
   const result = new Map<string, FIFOSettlementBalance>();
   settlements.forEach(item => {
-    const remainingCheck = Math.max(
-      0,
-      (remainingChecks.get(item.checkId) || 0) - item.amount
-    );
-    const remainingInvoice = Math.max(
-      0,
-      (remainingInvoices.get(item.invoiceId) || 0) - item.principalAmount
-    );
+    const remainingCheck = item.remainingCheck !== undefined
+      ? item.remainingCheck
+      : Math.max(
+          0,
+          (remainingChecks.get(item.checkId) || 0) - item.amount
+        );
+    const remainingInvoice = item.remainingInvoiceBase !== undefined
+      ? item.remainingInvoiceBase
+      : Math.max(
+          0,
+          (remainingInvoices.get(item.invoiceId) || 0) - item.principalAmount
+        );
     remainingChecks.set(item.checkId, remainingCheck);
     remainingInvoices.set(item.invoiceId, remainingInvoice);
     result.set(`${item.checkId}:${item.invoiceId}`, {
       remainingCheck,
       remainingInvoice,
+      remainingInvoiceWithFee: item.remainingInvoiceWithFee,
+      invoiceWithLateFee: item.invoiceWithLateFee,
+      lateFee: item.lateFee,
+      totalRate: item.totalRate,
+      dailyRate: item.dailyRate,
+      invoiceBaseAmount: item.invoiceBaseAmount,
     });
   });
   return result;
@@ -3011,16 +3095,20 @@ export function calculateLateProfit(
           effectiveInvoiceDate || check.receivedDate
         )
       : Math.max(1, Number(dayBasisOverride) || activeRule.dayBasis || 30);
-  const profit = invoiceBaseAmount * ((rate * overdueDays) / basis);
+  const dailyRate = basis > 0 ? rate / basis : 0;
+  const totalRate = dailyRate * overdueDays;
+  const profit = invoiceBaseAmount * totalRate;
   const settled = invoiceBaseAmount + profit;
   const remaining = Math.max(0, settled - check.amount);
-  const remainingBase = settled
-    ? remaining / (1 + (rate * overdueDays) / basis)
-    : 0;
+  const remainingBase = totalRate > 0
+    ? remaining / (1 + totalRate)
+    : remaining;
   return {
     days,
     overdueDays,
     rate,
+    dailyRate,
+    totalRate,
     base: invoiceBaseAmount,
     profit,
     settled,

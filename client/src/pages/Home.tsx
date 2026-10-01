@@ -2451,13 +2451,13 @@ function Invoices({
                                       <thead>
                                         <tr>
                                           <th style={{ width: "16%" }}>شماره و سررسید چک</th>
-                                          <th style={{ width: "13%" }}>مبلغ چک</th>
-                                          <th style={{ width: "10%" }}>وضعیت چک</th>
-                                          <th style={{ width: "11%" }}>روزهای دیرکرد</th>
-                                          <th style={{ width: "16%" }}>نرخ و سود دیرکرد</th>
-                                          <th style={{ width: "18%" }}>مبلغ تسویه (اصل + سود)</th>
-                                          <th style={{ width: "13%" }}>مانده فاکتور</th>
-                                          <th style={{ width: "13%" }}>مانده چک جهت انتقال</th>
+                                          <th style={{ width: "12%" }}>مبلغ چک (X)</th>
+                                          <th style={{ width: "9%" }}>وضعیت چک</th>
+                                          <th style={{ width: "10%" }}>روزهای دیرکرد (y)</th>
+                                          <th style={{ width: "17%" }}>نرخ و هزینه دیرکرد (Z)</th>
+                                          <th style={{ width: "17%" }}>مبلغ تسویه از چک</th>
+                                          <th style={{ width: "15%" }}>مانده فاکتور (G و L)</th>
+                                          <th style={{ width: "14%" }}>مانده چک جهت انتقال</th>
                                         </tr>
                                       </thead>
                                       <tbody>
@@ -2478,10 +2478,18 @@ function Invoices({
                                                 check,
                                                 rule,
                                                 invoice.date,
-                                                invoice.amount,
+                                                item.invoiceBaseAmount ?? invoice.amount,
                                                 state.settings.dayBasis
                                               )
                                             : null;
+                                          const daysY = item.days || probe?.days || 0;
+                                          const dailyRateR = item.dailyRate ?? (probe?.dailyRate ?? (probe?.rate ? probe.rate / 30 : 0));
+                                          const totalRateZ = item.totalRate ?? (probe?.totalRate ?? (dailyRateR * daysY));
+                                          const lateFeeVal = item.lateFee ?? (probe?.profit ?? (invoice.amount * totalRateZ));
+                                          const invoiceWithFeeK = item.invoiceWithLateFee ?? (probe?.settled ?? (invoice.amount + lateFeeVal));
+                                          const remainingWithFeeL = item.remainingInvoiceWithFee ?? allocationBalance?.remainingInvoiceWithFee ?? Math.max(0, invoiceWithFeeK - item.amount);
+                                          const remainingBaseG = item.remainingInvoiceBase ?? allocationBalance?.remainingInvoice ?? (totalRateZ > 0 ? remainingWithFeeL / (1 + totalRateZ) : remainingWithFeeL);
+                                          const remainingCheckVal = item.remainingCheck ?? allocationBalance?.remainingCheck ?? 0;
                                           return (
                                             <tr key={`${item.checkId}-${item.invoiceId}`}>
                                               <td>
@@ -2492,13 +2500,16 @@ function Invoices({
                                               </td>
                                               <td>{check ? formatMoney(check.amount, state.settings.currency) : "—"}</td>
                                               <td>{check?.status || "—"}</td>
-                                              <td>{formatNumber(item.days || 0)} روز</td>
+                                              <td>{formatNumber(daysY)} روز</td>
                                               <td>
-                                                {item.profit > 0 ? (
+                                                {totalRateZ > 0 ? (
                                                   <span>
-                                                    {formatMoney(item.profit, state.settings.currency)}
+                                                    <strong>{formatMoney(lateFeeVal, state.settings.currency)}</strong>
                                                     <small style={{ display: "block", color: "#555" }}>
-                                                      ({formatNumber((probe?.rate || 0) * 100)}٪)
+                                                      {formatNumber(totalRateZ * 100, 2)}٪ (روزی {formatNumber(dailyRateR * 100, 2)}٪)
+                                                    </small>
+                                                    <small style={{ display: "block", color: "#888", fontSize: "0.72rem" }}>
+                                                      فاکتور با دیرکرد (K): {formatMoney(invoiceWithFeeK, state.settings.currency)}
                                                     </small>
                                                   </span>
                                                 ) : (
@@ -2508,21 +2519,31 @@ function Invoices({
                                               <td>
                                                 <strong>{formatMoney(item.amount, state.settings.currency)}</strong>
                                                 <small style={{ display: "block", color: "#555" }}>
-                                                  اصل: {formatMoney(item.principalAmount, state.settings.currency)}
+                                                  اصل: {formatMoney(item.principalAmount, state.settings.currency)} | دیرکرد: {formatMoney(item.profit, state.settings.currency)}
                                                 </small>
                                               </td>
                                               <td>
                                                 <strong>
-                                                  {formatMoney(
-                                                    allocationBalance?.remainingInvoice ?? 0,
+                                                  خالص (G): {formatMoney(
+                                                    remainingBaseG,
                                                     state.settings.currency
                                                   )}
                                                 </strong>
+                                                {remainingWithFeeL > 0 && (
+                                                  <small style={{ display: "block", color: "#c2410c", fontSize: "0.72rem" }}>
+                                                    با دیرکرد (L): {formatMoney(remainingWithFeeL, state.settings.currency)}
+                                                  </small>
+                                                )}
+                                                {remainingBaseG <= 0.01 && (
+                                                  <small style={{ display: "block", color: "#15803d", fontWeight: "bold", fontSize: "0.72rem" }}>
+                                                    تسویه کامل (۱۰۰٪)
+                                                  </small>
+                                                )}
                                               </td>
                                               <td>
                                                 <strong>
                                                   {formatMoney(
-                                                    allocationBalance?.remainingCheck ?? 0,
+                                                    remainingCheckVal,
                                                     state.settings.currency
                                                   )}
                                                 </strong>
@@ -7720,12 +7741,12 @@ function Checks({
                                     <thead>
                                       <tr>
                                         <th style={{ width: "16%" }}>شماره و تاریخ فاکتور</th>
-                                        <th style={{ width: "14%" }}>مبلغ فاکتور</th>
-                                        <th style={{ width: "10%" }}>روزهای دیرکرد</th>
-                                        <th style={{ width: "15%" }}>نرخ و هزینه دیرکرد</th>
+                                        <th style={{ width: "12%" }}>مبلغ فاکتور (P)</th>
+                                        <th style={{ width: "9%" }}>روز دیرکرد (y)</th>
+                                        <th style={{ width: "18%" }}>نرخ و هزینه دیرکرد (Z)</th>
                                         <th style={{ width: "17%" }}>مبلغ تسویه از این چک</th>
-                                        <th style={{ width: "14%" }}>مانده فاکتور پس از تخصیص</th>
-                                        <th style={{ width: "14%" }}>مانده چک جهت انتقال</th>
+                                        <th style={{ width: "15%" }}>مانده فاکتور (G و L)</th>
+                                        <th style={{ width: "13%" }}>مانده چک جهت انتقال</th>
                                       </tr>
                                     </thead>
                                     <tbody>
@@ -7746,10 +7767,18 @@ function Checks({
                                               check,
                                               rule,
                                               invoice.date,
-                                              invoice.amount,
+                                              item.invoiceBaseAmount ?? invoice.amount,
                                               state.settings.dayBasis
                                             )
                                           : null;
+                                        const daysY = item.days || probe?.days || 0;
+                                        const dailyRateR = item.dailyRate ?? (probe?.dailyRate ?? (probe?.rate ? probe.rate / 30 : 0));
+                                        const totalRateZ = item.totalRate ?? (probe?.totalRate ?? (dailyRateR * daysY));
+                                        const lateFeeVal = item.lateFee ?? (probe?.profit ?? ((invoice?.amount || 0) * totalRateZ));
+                                        const invoiceWithFeeK = item.invoiceWithLateFee ?? (probe?.settled ?? ((invoice?.amount || 0) + lateFeeVal));
+                                        const remainingWithFeeL = item.remainingInvoiceWithFee ?? allocationBalance?.remainingInvoiceWithFee ?? Math.max(0, invoiceWithFeeK - item.amount);
+                                        const remainingBaseG = item.remainingInvoiceBase ?? allocationBalance?.remainingInvoice ?? (totalRateZ > 0 ? remainingWithFeeL / (1 + totalRateZ) : remainingWithFeeL);
+                                        const remainingCheckVal = item.remainingCheck ?? allocationBalance?.remainingCheck ?? 0;
                                         return (
                                           <tr key={`${item.checkId}-${item.invoiceId}`}>
                                             <td>
@@ -7759,13 +7788,16 @@ function Checks({
                                               </small>
                                             </td>
                                             <td>{invoice ? formatMoney(invoice.amount, state.settings.currency) : "—"}</td>
-                                            <td>{formatNumber(item.days || 0)} روز</td>
+                                            <td>{formatNumber(daysY)} روز</td>
                                             <td>
-                                              {item.profit > 0 ? (
+                                              {totalRateZ > 0 ? (
                                                 <span>
-                                                  {formatMoney(item.profit, state.settings.currency)}
+                                                  <strong>{formatMoney(lateFeeVal, state.settings.currency)}</strong>
                                                   <small style={{ display: "block", color: "#555" }}>
-                                                    ({formatNumber((probe?.rate || 0) * 100)}٪)
+                                                    {formatNumber(totalRateZ * 100, 2)}٪ (روزی {formatNumber(dailyRateR * 100, 2)}٪)
+                                                  </small>
+                                                  <small style={{ display: "block", color: "#888", fontSize: "0.72rem" }}>
+                                                    سررسید (K): {formatMoney(invoiceWithFeeK, state.settings.currency)}
                                                   </small>
                                                 </span>
                                               ) : (
@@ -7775,21 +7807,31 @@ function Checks({
                                             <td>
                                               <strong>{formatMoney(item.amount, state.settings.currency)}</strong>
                                               <small style={{ display: "block", color: "#555" }}>
-                                                اصل فاکتور: {formatMoney(item.principalAmount, state.settings.currency)}
+                                                اصل فاکتور: {formatMoney(item.principalAmount, state.settings.currency)} | دیرکرد: {formatMoney(item.profit, state.settings.currency)}
                                               </small>
                                             </td>
                                             <td>
                                               <strong>
-                                                {formatMoney(
-                                                  allocationBalance?.remainingInvoice ?? 0,
+                                                خالص (G): {formatMoney(
+                                                  remainingBaseG,
                                                   state.settings.currency
                                                 )}
                                               </strong>
+                                              {remainingWithFeeL > 0 && (
+                                                <small style={{ display: "block", color: "#c2410c", fontSize: "0.72rem" }}>
+                                                  با دیرکرد (L): {formatMoney(remainingWithFeeL, state.settings.currency)}
+                                                </small>
+                                              )}
+                                              {remainingBaseG <= 0.01 && (
+                                                <small style={{ display: "block", color: "#15803d", fontWeight: "bold", fontSize: "0.72rem" }}>
+                                                  تسویه کامل (۱۰۰٪)
+                                                </small>
+                                              )}
                                             </td>
                                             <td>
                                               <strong>
                                                 {formatMoney(
-                                                  allocationBalance?.remainingCheck ?? 0,
+                                                  remainingCheckVal,
                                                   state.settings.currency
                                                 )}
                                               </strong>

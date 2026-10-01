@@ -688,6 +688,87 @@ describe("FIFO settlement balances", () => {
     expect(totalPrincipal).toBeCloseTo(201_600_000, 0);
   });
 
+  it("calculates exact user example: invoice 200M, check 100M, 54 days delay, K=221.6M, L=121.6M, G=109,747,292.42", () => {
+    // پله: تا ۳۰ روز ۰٪، بیش از ۳۰ روز تا ۳۶۵ روز ۶٪ ماهانه (۰.۲٪ روزانه)
+    const rule: PaymentRule = {
+      id: "rule-tiered",
+      name: "قانون دیرکرد پله‌ای",
+      dayBasis: 30,
+      graceDays: 0,
+      active: true,
+      tiers: [
+        { maxDays: 30, rate: 0 },
+        { maxDays: 365, rate: 0.06 },
+      ],
+    };
+
+    // فاکتور: 200,000,000
+    const invoice: Invoice = {
+      id: "inv-200m",
+      number: "INV-200M",
+      type: "فروش",
+      date: "1405/06/07",
+      partyId: "cust-1",
+      amount: 200_000_000,
+      paidAmount: 0,
+      status: "باز",
+      paymentRuleId: "rule-tiered",
+      allocations: [],
+      items: [],
+    };
+
+    // چک تخصیص‌داده‌شده: 100,000,000 با سررسید 1405/07/30 (۵۴ روز دیرکرد)
+    const check: Check = {
+      id: "chk-100m",
+      number: "CHK-100M",
+      partyId: "cust-1",
+      receivedDate: "1405/06/07",
+      dueDate: "1405/07/30",
+      amount: 100_000_000,
+      status: "نزد ما",
+    };
+
+    // ۱. بررسی تابع calculateLateProfit
+    const probe = calculateLateProfit(check, rule, "1405/06/07", 200_000_000, 30);
+    expect(probe.days).toBe(54);
+    expect(probe.overdueDays).toBe(54);
+    expect(probe.dailyRate).toBeCloseTo(0.002, 5); // 0.2% در روز
+    expect(probe.totalRate).toBeCloseTo(0.108, 5); // 10.8% دیرکرد کل
+    expect(probe.profit).toBeCloseTo(21_600_000, 0); // دیرکرد کل فاکتور
+    expect(probe.settled).toBeCloseTo(221_600_000, 0); // K = 200M * 1.108 = 221.6M
+    expect(probe.remaining).toBeCloseTo(121_600_000, 0); // L = K - X = 121.6M
+    expect(probe.remainingBase).toBeCloseTo(109_747_292.42, 2); // G = L / 1.108
+
+    // ۲. بررسی تابع تسویه settleChecksFIFO
+    const settlements = settleChecksFIFO([check], [invoice], [rule], 30);
+    expect(settlements).toHaveLength(1);
+    const s = settlements[0];
+    expect(s.checkId).toBe("chk-100m");
+    expect(s.invoiceId).toBe("inv-200m");
+    expect(s.amount).toBe(100_000_000); // کل چک تخصیص یافته
+    expect(s.days).toBe(54);
+    expect(s.dailyRate).toBeCloseTo(0.002, 5);
+    expect(s.totalRate).toBeCloseTo(0.108, 5);
+    expect(s.invoiceBaseAmount).toBe(200_000_000); // P
+    expect(s.lateFee).toBeCloseTo(21_600_000, 0); // P * Z
+    expect(s.invoiceWithLateFee).toBeCloseTo(221_600_000, 0); // K
+    expect(s.remainingInvoiceWithFee).toBeCloseTo(121_600_000, 0); // L
+    expect(s.remainingInvoiceBase).toBeCloseTo(109_747_292.42, 2); // G
+    expect(s.remainingCheck).toBe(0); // باقیمانده چک ۰
+    expect(s.principalAmount).toBeCloseTo(90_252_707.58, 2); // P - G
+    expect(s.profit).toBeCloseTo(9_747_292.42, 2); // دیرکرد پوشش داده شده با چک
+
+    // ۳. بررسی getSettlementBalances
+    const balances = getSettlementBalances(settlements, [check], [invoice]);
+    const b = balances.get("chk-100m:inv-200m");
+    expect(b).toBeDefined();
+    expect(b?.remainingCheck).toBe(0);
+    expect(b?.remainingInvoice).toBeCloseTo(109_747_292.42, 2);
+    expect(b?.remainingInvoiceWithFee).toBeCloseTo(121_600_000, 0);
+    expect(b?.invoiceWithLateFee).toBeCloseTo(221_600_000, 0);
+    expect(b?.lateFee).toBeCloseTo(21_600_000, 0);
+  });
+
   it("handles multi-tier progression and unsorted tiers correctly", () => {
     // پله‌های چندگانه با ترتیب نامنظم برای تست مرتب‌سازی خودکار
     const multiTierRule: PaymentRule = {
