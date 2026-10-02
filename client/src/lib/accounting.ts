@@ -150,6 +150,7 @@ export interface IssuedCheck {
   status: IssuedCheckStatus;
   purpose: "خرید" | "بدهی" | "تعمیرات" | "نگهداری" | "سایر";
   bankName?: string;
+  bankAccountId?: string;
   note: string;
 }
 
@@ -2481,6 +2482,31 @@ export function getSettlementBalances(
     });
   });
   return result;
+}
+
+export function partyBalanceDescriptor(state: AppState, personId: string) {
+  const invoices = state.invoices.filter(
+    invoice => invoice.partyId === personId && invoice.status !== "باطل"
+  );
+  const salesOutstanding = invoices
+    .filter(invoice => invoice.type === "فروش")
+    .reduce(
+      (sum, invoice) =>
+        sum + Math.max(0, invoice.amount - (invoice.paidAmount || 0)),
+      0
+    );
+  const purchaseTotal = invoices
+    .filter(invoice => invoice.type === "خرید")
+    .reduce((sum, invoice) => sum + invoice.amount, 0);
+  const purchasePaid = state.purchasePayments
+    .filter(payment => payment.supplierId === personId)
+    .reduce((sum, payment) => sum + payment.amount, 0);
+  const net = salesOutstanding - Math.max(0, purchaseTotal - purchasePaid);
+  if (Math.abs(net) < 0.01)
+    return { amount: 0, label: "تسویه / بدون مانده", tone: "muted-cell" };
+  return net > 0
+    ? { amount: net, label: "طلب از طرف حساب", tone: "amount-negative" }
+    : { amount: Math.abs(net), label: "بدهی به طرف حساب", tone: "amount-positive" };
 }
 
 export interface EffectiveProfitBreakdown {

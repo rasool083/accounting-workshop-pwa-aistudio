@@ -14,6 +14,7 @@ import {
   Cloud,
   CloudDownload,
   CloudUpload,
+  Eye,
   FileClock,
   FileDown,
   FileJson,
@@ -24,6 +25,7 @@ import {
   Pencil,
   Plus,
   Percent,
+  Printer,
   RefreshCw,
   Tags,
   Search,
@@ -39,6 +41,9 @@ import {
 } from "lucide-react";
 import {
   AppState,
+  Person,
+  Invoice,
+  Check as CheckType,
   BankFeeRule,
   CheckGroupAllocation,
   CheckStatus,
@@ -147,6 +152,14 @@ import {
 } from "@/lib/security";
 import VendorDirectory from "@/pages/VendorDirectory";
 import { PWAInstallButton } from "@/components/PWAInstallButton";
+import {
+  AccountLedgerDialog,
+  PartyLedgerDialog,
+  TransactionDetailDialog,
+  InvoiceDetailDialog,
+  CheckDetailDialog,
+  EventDetailDialog,
+} from "@/components/LedgerDialogs";
 
 const iconMap = {
   "layout-dashboard": LayoutDashboard,
@@ -1306,6 +1319,7 @@ function Dashboard({
   onQuick: () => void;
   onNavigate: (page: PageId) => void;
 }) {
+  const [selectedTx, setSelectedTx] = useState<AppState["transactions"][number] | null>(null);
   const recent = state.transactions.slice(0, 5);
   return (
     <div className="page-stack page-enter">
@@ -1374,7 +1388,12 @@ function Dashboard({
           {recent.length ? (
             <div className="activity-list">
               {recent.map(item => (
-                <ActivityRow key={item.id} item={item} state={state} />
+                <ActivityRow
+                  key={item.id}
+                  item={item}
+                  state={state}
+                  onSelect={() => setSelectedTx(item)}
+                />
               ))}
             </div>
           ) : (
@@ -1491,6 +1510,13 @@ function Dashboard({
           </button>
         </div>
       </section>
+      {selectedTx && (
+        <TransactionDetailDialog
+          transaction={selectedTx}
+          state={state}
+          onClose={() => setSelectedTx(null)}
+        />
+      )}
     </div>
   );
 }
@@ -1548,13 +1574,20 @@ function QuickAction({
 function ActivityRow({
   item,
   state,
+  onSelect,
 }: {
   item: AppState["transactions"][number];
   state: AppState;
+  onSelect?: () => void;
 }) {
   const incoming = ["دریافت", "درآمد"].includes(item.type);
   return (
-    <div className="activity-row">
+    <div
+      className="activity-row clickable-row"
+      onClick={onSelect}
+      style={{ cursor: onSelect ? "pointer" : undefined }}
+      title="برای مشاهده جزئیات کامل عملیات کلیک کنید"
+    >
       <span className={`activity-icon ${incoming ? "mint" : "rose"}`}>
         {incoming ? <ArrowDownLeft size={17} /> : <ArrowUpRight size={17} />}
       </span>
@@ -1590,6 +1623,8 @@ function Invoices({
   const [selectedInvoice, setSelectedInvoice] = useState<
     AppState["invoices"][number] | null
   >(null);
+  const [selectedPersonForLedger, setSelectedPersonForLedger] = useState<Person | null>(null);
+  const [selectedCheckForDetail, setSelectedCheckForDetail] = useState<CheckType | null>(null);
   const [expandedInvoiceIds, setExpandedInvoiceIds] = useState<Set<string>>(
     new Set()
   );
@@ -2287,20 +2322,33 @@ function Invoices({
                     );
                     return (
                       <Fragment key={invoice.id}>
-                        <tr>
+                        <tr
+                          className="clickable-row"
+                          onClick={() =>
+                            setExpandedInvoiceIds(current => {
+                              const next = new Set(current);
+                              if (next.has(invoice.id))
+                                next.delete(invoice.id);
+                              else next.add(invoice.id);
+                              return next;
+                            })
+                          }
+                          title="برای مشاهده یا بستن چک‌های تخصیص‌یافته و جزئیات فاکتور کلیک کنید"
+                        >
                           <td>
                             <button
                               type="button"
                               className={`allocation-toggle ${expanded ? "is-expanded" : ""}`}
-                              onClick={() =>
+                              onClick={e => {
+                                e.stopPropagation();
                                 setExpandedInvoiceIds(current => {
                                   const next = new Set(current);
                                   if (next.has(invoice.id))
                                     next.delete(invoice.id);
                                   else next.add(invoice.id);
                                   return next;
-                                })
-                              }
+                                });
+                              }}
                               title="نمایش چک‌های تخصیص‌یافته و مشخصات مشتری"
                             >
                               <ChevronDown size={14} />
@@ -2321,7 +2369,24 @@ function Invoices({
                               {invoiceDirectionLabel(invoice.type)}
                             </span>
                           </td>
-                          <td>{personName(state, invoice.partyId)}</td>
+                          <td>
+                            {invoice.partyId ? (
+                              <button
+                                type="button"
+                                className="text-button"
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  const p = state.people.find(person => person.id === invoice.partyId);
+                                  if (p) setSelectedPersonForLedger(p);
+                                }}
+                                title="مشاهده پرونده مالی و کاردکس طرف حساب"
+                              >
+                                <strong>{personName(state, invoice.partyId)}</strong>
+                              </button>
+                            ) : (
+                              <span className="muted-cell">بدون طرف حساب</span>
+                            )}
+                          </td>
                           <td>
                             <div className="invoice-cell-list">
                               {invoice.items.map((item, index) => (
@@ -2497,7 +2562,14 @@ function Invoices({
                                             )
                                           : null;
                                         return (
-                                          <tr key={`${item.checkId}-${item.invoiceId}`}>
+                                          <tr
+                                            key={`${item.checkId}-${item.invoiceId}`}
+                                            className="clickable-row"
+                                            onClick={() => {
+                                              if (check) setSelectedCheckForDetail(check);
+                                            }}
+                                            title="برای مشاهده جزئیات کامل این چک کلیک کنید"
+                                          >
                                             {/* ستون اول : اطلاعات چک (شامل شماره صیادی/چک ، تاریخ سررسید ، مبلغ چک ، بانک) */}
                                             <td>
                                               <strong>چک {check?.sayadNumber || check?.number || "—"}</strong>
@@ -3205,6 +3277,21 @@ function Invoices({
           defaultPartyId={invoicePartyFilter !== "همه" ? invoicePartyFilter : ""}
         />
       )}
+      {selectedPersonForLedger && (
+        <PartyLedgerDialog
+          person={selectedPersonForLedger}
+          state={state}
+          onClose={() => setSelectedPersonForLedger(null)}
+        />
+      )}
+      {selectedCheckForDetail && (
+        <CheckDetailDialog
+          check={selectedCheckForDetail}
+          state={state}
+          onClose={() => setSelectedCheckForDetail(null)}
+          onOpenParty={p => setSelectedPersonForLedger(p)}
+        />
+      )}
     </div>
   );
 }
@@ -3502,6 +3589,7 @@ function BankAccounts({
   onSave: (next: AppState, message: string) => void;
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [selectedAccount, setSelectedAccount] = useState<AppState["accounts"][number] | null>(null);
   const [form, setForm] = useState({
     name: "",
     type: "بانک" as "بانک" | "صندوق" | "شریک",
@@ -3692,29 +3780,72 @@ function BankAccounts({
                     check => check.bankAccountId === account.id
                   );
                   return (
-                    <tr key={account.id}>
+                    <tr
+                      key={account.id}
+                      className="clickable-row"
+                      onClick={() => setSelectedAccount(account)}
+                      title="برای مشاهده ریز تراکنش‌ها، انتقال‌ها و گردش حساب کلیک کنید"
+                    >
                       <td>
-                        <strong>{account.name}</strong>
+                        <button
+                          className="text-button"
+                          type="button"
+                          onClick={e => {
+                            e.stopPropagation();
+                            setSelectedAccount(account);
+                          }}
+                        >
+                          <strong>{account.name}</strong>
+                        </button>
                       </td>
                       <td>
                         <span className="soft-tag">{account.type}</span>
                       </td>
                       <td className="amount-cell">
-                        {formatMoney(account.balance, state.settings.currency)}
+                        <strong>{formatMoney(account.balance, state.settings.currency)}</strong>
                       </td>
-                      <td>{formatNumber(linkedChecks.length)}</td>
                       <td>
+                        <button
+                          className="text-button"
+                          type="button"
+                          onClick={e => {
+                            e.stopPropagation();
+                            setSelectedAccount(account);
+                          }}
+                        >
+                          <span className="badge teal" style={{ cursor: "pointer" }}>
+                            {formatNumber(linkedChecks.length)} چک
+                          </span>
+                        </button>
+                      </td>
+                      <td>
+                        <button
+                          className="icon-button row-action"
+                          title="مشاهده ریز تراکنش‌ها و گردش حساب"
+                          onClick={e => {
+                            e.stopPropagation();
+                            setSelectedAccount(account);
+                          }}
+                        >
+                          <Eye size={14} />
+                        </button>
                         <button
                           className="icon-button row-action edit-action"
                           title="ویرایش حساب"
-                          onClick={() => edit(account)}
+                          onClick={e => {
+                            e.stopPropagation();
+                            edit(account);
+                          }}
                         >
                           <Pencil size={14} />
                         </button>
                         <button
                           className="icon-button row-action delete-action"
                           title="حذف حساب"
-                          onClick={() => remove(account)}
+                          onClick={e => {
+                            e.stopPropagation();
+                            remove(account);
+                          }}
                         >
                           <Trash2 size={14} />
                         </button>
@@ -3789,6 +3920,13 @@ function BankAccounts({
           </div>
         </form>
       </div>
+      {selectedAccount && (
+        <AccountLedgerDialog
+          account={selectedAccount}
+          state={state}
+          onClose={() => setSelectedAccount(null)}
+        />
+      )}
     </div>
   );
 }
@@ -3811,6 +3949,8 @@ function PayrollPage({
     status: "پرداخت‌شده" as "پرداخت‌شده" | "پرداختنی",
     note: "",
   });
+  const [selectedPersonForLedger, setSelectedPersonForLedger] = useState<Person | null>(null);
+  const [selectedAccountForLedger, setSelectedAccountForLedger] = useState<AppState["accounts"][number] | null>(null);
   const payrollPeople = state.people.filter(person =>
     person.roles.some(role => ["کارگر", "کارمند", "شریک"].includes(role))
   );
@@ -3968,8 +4108,22 @@ function PayrollPage({
         <div className="full-field form-actions"><button className="button button-primary" type="submit"><WalletCards size={16} /> ثبت حقوق</button></div>
       </form>
       <div className="panel table-panel"><div className="panel-heading"><div><span className="section-kicker">گزارش حقوق</span><h3>خلاصهٔ دوره‌ای</h3></div><span className="soft-tag">رکورد باطل‌شده محاسبه نمی‌شود</span></div><div className="table-wrap"><table><thead><tr><th>دوره</th><th>تعداد</th><th>پرداخت‌شده</th><th>پرداختنی</th><th>جمع تعهد دوره</th></tr></thead><tbody>{summaryRows.length ? summaryRows.map(([period, row]) => <tr key={period}><td><strong>{period}</strong></td><td>{row.count}</td><td>{formatMoney(row.paid, state.settings.currency)}</td><td>{formatMoney(row.payable, state.settings.currency)}</td><td>{formatMoney(row.paid + row.payable, state.settings.currency)}</td></tr>) : <tr><td colSpan={5}>هنوز رکورد فعال حقوقی ثبت نشده است.</td></tr>}</tbody></table></div></div>
-      <div className="panel table-panel"><div className="panel-heading"><div><span className="section-kicker">دفتر حقوق</span><h3>سوابق پرداخت و حقوق پرداختنی</h3></div><span className="soft-tag">حساب شخص درگیر نمی‌شود</span></div><div className="filter-grid"><label>شخص<select value={filters.personId} onChange={event => setFilters({ ...filters, personId: event.target.value })}><option value="">همهٔ اشخاص</option>{payrollPeople.map(person => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label><label>نقش<select value={filters.role} onChange={event => setFilters({ ...filters, role: event.target.value })}><option value="">همهٔ نقش‌ها</option><option value="کارگر">کارگر</option><option value="کارمند">کارمند</option><option value="شریک">شریک</option></select></label><label>وضعیت<select value={filters.status} onChange={event => setFilters({ ...filters, status: event.target.value })}><option value="همه">همهٔ وضعیت‌ها</option><option value="پرداخت‌شده">پرداخت‌شده</option><option value="پرداختنی">پرداختنی</option></select></label><label>دوره<input value={filters.period} onChange={event => setFilters({ ...filters, period: event.target.value })} placeholder="مثلاً ۱۴۰۵/۰۶" /></label></div><div className="table-wrap"><table><thead><tr><th>دوره</th><th>دریافت‌کننده</th><th>مبلغ</th><th>وضعیت</th><th>حساب پرداخت</th><th>عملیات</th></tr></thead><tbody>{filteredRecords.length ? filteredRecords.map(record => { const linkedPerson = record.personId ? state.people.find(item => item.id === record.personId) : undefined; return <tr key={record.id}><td>{record.period}</td><td><strong>{linkedPerson?.name || record.employeeName}</strong><small className="table-subline">{linkedPerson ? `اتصال: ${linkedPerson.roles.join("، ")}` : "بدون اتصال به دفتر اشخاص"}{record.note ? ` · ${record.note}` : ""}</small></td><td>{formatMoney(record.amount, state.settings.currency)}</td><td><span className={`status-pill ${statusClass(record.status)}`}>{record.status}</span></td><td>{record.accountId ? state.accounts.find(item => item.id === record.accountId)?.name || "حذف‌شده" : "—"}</td><td className="table-actions">{record.status === "پرداختنی" && <button className="text-button" type="button" onClick={() => payRecord(record)}>پرداخت</button>}{record.status !== "باطل" && <button className="text-button danger" type="button" onClick={() => voidRecord(record)}>ابطال</button>}</td></tr>; }) : <tr><td colSpan={6}>رکوردی با فیلتر فعلی پیدا نشد.</td></tr>}</tbody></table></div></div>
+      <div className="panel table-panel"><div className="panel-heading"><div><span className="section-kicker">دفتر حقوق</span><h3>سوابق پرداخت و حقوق پرداختنی</h3></div><span className="soft-tag">حساب شخص درگیر نمی‌شود</span></div><div className="filter-grid"><label>شخص<select value={filters.personId} onChange={event => setFilters({ ...filters, personId: event.target.value })}><option value="">همهٔ اشخاص</option>{payrollPeople.map(person => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label><label>نقش<select value={filters.role} onChange={event => setFilters({ ...filters, role: event.target.value })}><option value="">همهٔ نقش‌ها</option><option value="کارگر">کارگر</option><option value="کارمند">کارمند</option><option value="شریک">شریک</option></select></label><label>وضعیت<select value={filters.status} onChange={event => setFilters({ ...filters, status: event.target.value })}><option value="همه">همهٔ وضعیت‌ها</option><option value="پرداخت‌شده">پرداخت‌شده</option><option value="پرداختنی">پرداختنی</option></select></label><label>دوره<input value={filters.period} onChange={event => setFilters({ ...filters, period: event.target.value })} placeholder="مثلاً ۱۴۰۵/۰۶" /></label></div><div className="table-wrap"><table><thead><tr><th>دوره</th><th>دریافت‌کننده</th><th>مبلغ</th><th>وضعیت</th><th>حساب پرداخت</th><th>عملیات</th></tr></thead><tbody>{filteredRecords.length ? filteredRecords.map(record => { const linkedPerson = record.personId ? state.people.find(item => item.id === record.personId) : undefined; const linkedAccount = record.accountId ? state.accounts.find(item => item.id === record.accountId) : undefined; return <tr key={record.id}><td>{record.period}</td><td>{linkedPerson ? <button type="button" className="text-button" onClick={() => setSelectedPersonForLedger(linkedPerson)} title="مشاهده پرونده مالی شخص"><strong>{linkedPerson.name}</strong></button> : <strong>{record.employeeName}</strong>}<small className="table-subline">{linkedPerson ? `اتصال: ${linkedPerson.roles.join("، ")}` : "بدون اتصال به دفتر اشخاص"}{record.note ? ` · ${record.note}` : ""}</small></td><td>{formatMoney(record.amount, state.settings.currency)}</td><td><span className={`status-pill ${statusClass(record.status)}`}>{record.status}</span></td><td>{linkedAccount ? <button type="button" className="text-button" onClick={() => setSelectedAccountForLedger(linkedAccount)} title="مشاهده گردش حساب"><strong>{linkedAccount.name}</strong></button> : "—"}</td><td className="table-actions">{record.status === "پرداختنی" && <button className="text-button" type="button" onClick={() => payRecord(record)}>پرداخت</button>}{record.status !== "باطل" && <button className="text-button danger" type="button" onClick={() => voidRecord(record)}>ابطال</button>}</td></tr>; }) : <tr><td colSpan={6}>رکوردی با فیلتر فعلی پیدا نشد.</td></tr>}</tbody></table></div></div>
       <div className="panel soft-panel"><strong>منطق حسابداری این صفحه</strong><p>نام کارگر، کارمند یا شریک به رکورد حقوق متصل می‌شود تا تغییر نام، گزارش و فیلترها یکپارچه باشند؛ اما تراکنش حقوق عمداً طرف‌حساب مالی ندارد. در پرداخت مستقیم، حساب بانک یا صندوق کاهش می‌یابد و هزینهٔ حقوق ثبت می‌شود. در ثبت حقوق پرداختنی، تا زمان پرداخت هیچ حساب بانکی و هیچ ماندهٔ شخصی تغییر نمی‌کند.</p></div>
+      {selectedPersonForLedger && (
+        <PartyLedgerDialog
+          person={selectedPersonForLedger}
+          state={state}
+          onClose={() => setSelectedPersonForLedger(null)}
+        />
+      )}
+      {selectedAccountForLedger && (
+        <AccountLedgerDialog
+          account={selectedAccountForLedger}
+          state={state}
+          onClose={() => setSelectedAccountForLedger(null)}
+        />
+      )}
     </div>
   );
 }
@@ -3984,6 +4138,9 @@ function Transactions({
   onSave: (state: AppState, message: string) => void;
 }) {
   const [editingTransaction, setEditingTransaction] = useState<
+    AppState["transactions"][number] | null
+  >(null);
+  const [selectedTransaction, setSelectedTransaction] = useState<
     AppState["transactions"][number] | null
   >(null);
   const [editForm, setEditForm] = useState({
@@ -4923,7 +5080,12 @@ function Transactions({
             <tbody>
               {state.transactions.length ? (
                 state.transactions.map(item => (
-                  <tr key={item.id}>
+                  <tr
+                    key={item.id}
+                    className="clickable-row"
+                    onClick={() => setSelectedTransaction(item)}
+                    title="برای مشاهده جزئیات کامل عملیات کلیک کنید"
+                  >
                     <td>
                       <span className="table-type">
                         <span
@@ -4934,13 +5096,13 @@ function Transactions({
                     </td>
                     <td>{formatDate(item.date)}</td>
                     <td>
-                      <div>{personName(state, item.partyId)}</div>
+                      <div><strong>{personName(state, item.partyId)}</strong></div>
                       {item.note && (
                         <small className="muted-cell">{item.note}</small>
                       )}
                     </td>
                     <td className="amount-cell">
-                      {formatMoney(item.amount, state.settings.currency)}
+                      <strong>{formatMoney(item.amount, state.settings.currency)}</strong>
                       <small className="table-subline">{cashDirectionLabel(item.type)}</small>
                       {!!item.feeAmount && <small className="table-subline">کارمزد: {formatMoney(item.feeAmount, state.settings.currency)} از مبدأ</small>}
                     </td>
@@ -4952,15 +5114,29 @@ function Transactions({
                       </span>
                       <button
                         className="icon-button row-action"
+                        title="مشاهده جزئیات کامل عملیات"
+                        onClick={e => {
+                          e.stopPropagation();
+                          setSelectedTransaction(item);
+                        }}
+                      >
+                        <Eye size={14} />
+                      </button>
+                      <button
+                        className="icon-button row-action"
                         title="ویرایش کامل عملیات"
-                        onClick={() => beginTransactionEdit(item)}
+                        onClick={e => {
+                          e.stopPropagation();
+                          beginTransactionEdit(item);
+                        }}
                       >
                         <Pencil size={14} />
                       </button>
                       <button
                         className="icon-button row-action"
                         title="حذف عملیات"
-                        onClick={() => {
+                        onClick={e => {
+                          e.stopPropagation();
                           if (!window.confirm("عملیات حذف شود؟")) return;
                           const nextAccounts =
                             item.accountId ||
@@ -5107,6 +5283,13 @@ function Transactions({
           </form>
         </Dialog>
       )}
+      {selectedTransaction && (
+        <TransactionDetailDialog
+          transaction={selectedTransaction}
+          state={state}
+          onClose={() => setSelectedTransaction(null)}
+        />
+      )}
     </div>
   );
 }
@@ -5127,6 +5310,9 @@ function People({
   };
   const [open, setOpen] = useState(false);
   const [editingPerson, setEditingPerson] = useState<
+    AppState["people"][number] | null
+  >(null);
+  const [selectedPerson, setSelectedPerson] = useState<
     AppState["people"][number] | null
   >(null);
   const [peopleSortDirection, setPeopleSortDirection] = useState<
@@ -5240,56 +5426,86 @@ function People({
                   )
                   .map(person => {
                     const balance = partyBalanceDescriptor(state, person.id);
-                    return <tr key={person.id}>
-                      <td className="muted-cell">{person.code}</td>
-                      <td>
-                        <strong>{person.name}</strong>
-                      </td>
-                      <td>
-                        <div className="role-tags">
-                          {(person.roles?.length
-                            ? person.roles
-                            : [person.type]
-                          ).map(role => (
-                            <span className="soft-tag" key={role}>
-                              {role}
-                            </span>
-                          ))}
-                        </div>
-                      </td>
-                      <td>{person.phone || "—"}</td>
-                      <td className={balance.tone}>
-                        <strong>{balance.amount ? formatMoney(balance.amount, state.settings.currency) : "—"}</strong>
-                        <small className="table-subline">{balance.label}</small>
-                      </td>
-                      <td>
-                        <button
-                          className="icon-button row-action"
-                          title="ویرایش کامل طرف حساب"
-                          onClick={() => beginEdit(person)}
-                        >
-                          <Pencil size={14} />
-                        </button>
-                        <button
-                          className="icon-button row-action"
-                          title="حذف طرف حساب"
-                          onClick={() =>
-                            window.confirm("طرف حساب حذف شود؟") &&
-                            onSave(
-                              {
-                                ...state,
-                                people: state.people.filter(
-                                  item => item.id !== person.id
-                                ),
-                              },
-                              "طرف حساب حذف شد"
-                            )
-                          }
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </td>
-                    </tr>;
+                    return (
+                      <tr
+                        key={person.id}
+                        className="clickable-row"
+                        onClick={() => setSelectedPerson(person)}
+                        title="برای مشاهده پرونده مالی، صورت‌حساب، فاکتورها و چک‌ها کلیک کنید"
+                      >
+                        <td className="muted-cell">{person.code}</td>
+                        <td>
+                          <button
+                            className="text-button"
+                            type="button"
+                            onClick={e => {
+                              e.stopPropagation();
+                              setSelectedPerson(person);
+                            }}
+                          >
+                            <strong>{person.name}</strong>
+                          </button>
+                        </td>
+                        <td>
+                          <div className="role-tags">
+                            {(person.roles?.length
+                              ? person.roles
+                              : [person.type]
+                            ).map(role => (
+                              <span className="soft-tag" key={role}>
+                                {role}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                        <td>{person.phone || "—"}</td>
+                        <td className={balance.tone}>
+                          <strong>{balance.amount ? formatMoney(balance.amount, state.settings.currency) : "—"}</strong>
+                          <small className="table-subline">{balance.label}</small>
+                        </td>
+                        <td>
+                          <button
+                            className="icon-button row-action"
+                            title="مشاهده پرونده و گردش حساب طرف حساب"
+                            onClick={e => {
+                              e.stopPropagation();
+                              setSelectedPerson(person);
+                            }}
+                          >
+                            <Eye size={14} />
+                          </button>
+                          <button
+                            className="icon-button row-action"
+                            title="ویرایش کامل طرف حساب"
+                            onClick={e => {
+                              e.stopPropagation();
+                              beginEdit(person);
+                            }}
+                          >
+                            <Pencil size={14} />
+                          </button>
+                          <button
+                            className="icon-button row-action"
+                            title="حذف طرف حساب"
+                            onClick={e => {
+                              e.stopPropagation();
+                              if (!window.confirm("طرف حساب حذف شود؟")) return;
+                              onSave(
+                                {
+                                  ...state,
+                                  people: state.people.filter(
+                                    item => item.id !== person.id
+                                  ),
+                                },
+                                "طرف حساب حذف شد"
+                              );
+                            }}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </td>
+                      </tr>
+                    );
                   })
               ) : (
                 <tr>
@@ -5387,6 +5603,13 @@ function People({
             </div>
           </form>
         </Dialog>
+      )}
+      {selectedPerson && (
+        <PartyLedgerDialog
+          person={selectedPerson}
+          state={state}
+          onClose={() => setSelectedPerson(null)}
+        />
       )}
     </div>
   );
@@ -5843,7 +6066,12 @@ function Inventory({
             <tbody>
               {visibleProducts.length ? (
                 visibleProducts.map(product => (
-                  <tr key={product.id}>
+                  <tr
+                    key={product.id}
+                    className="clickable-row"
+                    onClick={() => setSelectedProductId(product.id)}
+                    title="برای مشاهده کاردکس کالا و گردش انبار کلیک کنید"
+                  >
                     <td className="muted-cell">{product.code}</td>
                     <td>
                       <button
@@ -6907,6 +7135,11 @@ function Checks({
     "خرج شده",
   ];
   const [open, setOpen] = useState(false);
+  const [selectedCheckForDetail, setSelectedCheckForDetail] = useState<
+    AppState["checks"][number] | null
+  >(null);
+  const [selectedPersonForLedger, setSelectedPersonForLedger] = useState<Person | null>(null);
+  const [selectedInvoiceForDetail, setSelectedInvoiceForDetail] = useState<Invoice | null>(null);
   const [editingCheck, setEditingCheck] = useState<
     AppState["checks"][number] | null
   >(null);
@@ -7533,20 +7766,30 @@ function Checks({
                     <Fragment key={check.id}>
                       <tr
                         key={check.id}
-                        className={`check-row check-row-${check.status === "وصول شده" ? "cleared" : check.status === "خرج شده" ? "spent" : ["برگشتی", "عودت داده شده", "باطل"].includes(check.status) ? "bad" : check.status === "جایگزین شده" ? "replaced" : "open"}`}
+                        className={`check-row check-row-${check.status === "وصول شده" ? "cleared" : check.status === "خرج شده" ? "spent" : ["برگشتی", "عودت داده شده", "باطل"].includes(check.status) ? "bad" : check.status === "جایگزین شده" ? "replaced" : "open"} clickable-row`}
+                        onClick={() =>
+                          setExpandedCheckIds(current => {
+                            const next = new Set(current);
+                            if (next.has(check.id)) next.delete(check.id);
+                            else next.add(check.id);
+                            return next;
+                          })
+                        }
+                        title="برای مشاهده یا بستن فاکتورهای تخصیص‌یافته کلیک کنید"
                       >
                         <td>
                           <button
                             type="button"
                             className={`allocation-toggle ${expanded ? "is-expanded" : ""}`}
-                            onClick={() =>
+                            onClick={e => {
+                              e.stopPropagation();
                               setExpandedCheckIds(current => {
                                 const next = new Set(current);
                                 if (next.has(check.id)) next.delete(check.id);
                                 else next.add(check.id);
                                 return next;
-                              })
-                            }
+                              });
+                            }}
                             aria-expanded={expanded}
                             title="نمایش فاکتورهای تخصیص‌یافته"
                           >
@@ -7570,7 +7813,24 @@ function Checks({
                             </small>
                           )}
                         </td>
-                        <td>{personName(state, check.partyId)}</td>
+                        <td>
+                          {check.partyId ? (
+                            <button
+                              type="button"
+                              className="text-button"
+                              onClick={e => {
+                                e.stopPropagation();
+                                const p = state.people.find(person => person.id === check.partyId);
+                                if (p) setSelectedPersonForLedger(p);
+                              }}
+                              title="مشاهده پرونده مالی و کاردکس طرف حساب"
+                            >
+                              <strong>{personName(state, check.partyId)}</strong>
+                            </button>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
                         <td>{formatDate(check.receivedDate)}</td>
                         <td>{formatDate(check.dueDate)}</td>
                         <td>
@@ -7838,7 +8098,14 @@ function Checks({
                                             )
                                           : null;
                                         return (
-                                          <tr key={`${item.checkId}-${item.invoiceId}`}>
+                                          <tr
+                                            key={`${item.checkId}-${item.invoiceId}`}
+                                            className="clickable-row"
+                                            onClick={() => {
+                                              if (invoice) setSelectedInvoiceForDetail(invoice);
+                                            }}
+                                            title="برای مشاهده جزئیات کامل این فاکتور کلیک کنید"
+                                          >
                                             {/* ستون اول : اطلاعات فاکتور (شامل شماره فاکتور ، تاریخ صدور ، مبلغ فاکتور) */}
                                             <td>
                                               <strong>فاکتور {invoice?.number || "—"}</strong>
@@ -8251,6 +8518,30 @@ function Checks({
           state={state}
           onSave={onSave}
           defaultPartyId={checkPartyFilter !== "همه" ? checkPartyFilter : ""}
+        />
+      )}
+      {selectedPersonForLedger && (
+        <PartyLedgerDialog
+          person={selectedPersonForLedger}
+          state={state}
+          onClose={() => setSelectedPersonForLedger(null)}
+        />
+      )}
+      {selectedInvoiceForDetail && (
+        <InvoiceDetailDialog
+          invoice={selectedInvoiceForDetail}
+          state={state}
+          onClose={() => setSelectedInvoiceForDetail(null)}
+          onOpenParty={p => setSelectedPersonForLedger(p)}
+        />
+      )}
+      {selectedCheckForDetail && (
+        <CheckDetailDialog
+          check={selectedCheckForDetail}
+          state={state}
+          onClose={() => setSelectedCheckForDetail(null)}
+          onOpenParty={p => setSelectedPersonForLedger(p)}
+          onOpenInvoice={i => setSelectedInvoiceForDetail(i)}
         />
       )}
     </div>
@@ -11535,24 +11826,33 @@ function PageIntro({
 
 function Dialog({
   title,
+  kicker,
+  className,
+  extraHeader,
   onClose,
   children,
 }: {
   title: string;
+  kicker?: string;
+  className?: string;
+  extraHeader?: React.ReactNode;
   onClose: () => void;
   children: React.ReactNode;
 }) {
   return (
     <div className="dialog-backdrop" onMouseDown={onClose}>
-      <div className="dialog" onMouseDown={e => e.stopPropagation()}>
+      <div className={`dialog ${className || ""}`} onMouseDown={e => e.stopPropagation()}>
         <div className="dialog-header">
           <div>
-            <span className="section-kicker">فرم ثبت</span>
+            <span className="section-kicker">{kicker || "فرم ثبت"}</span>
             <h3>{title}</h3>
           </div>
-          <button className="icon-button" onClick={onClose}>
-            <X size={18} />
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {extraHeader}
+            <button className="icon-button" onClick={onClose} title="بستن">
+              <X size={18} />
+            </button>
+          </div>
         </div>
         {children}
       </div>
