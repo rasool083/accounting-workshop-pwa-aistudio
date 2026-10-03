@@ -160,6 +160,7 @@ import {
   CheckDetailDialog,
   EventDetailDialog,
 } from "@/components/LedgerDialogs";
+import { PrintActionMenu } from "@/components/PrintPDFModal";
 
 const iconMap = {
   "layout-dashboard": LayoutDashboard,
@@ -1178,6 +1179,7 @@ export default function Home() {
               metrics={metrics}
               onQuick={() => setQuickOpen(true)}
               onNavigate={setActivePage}
+              onSave={(next, msg) => updateState(next, msg)}
             />
           )}
           {activePage === "transactions" && (
@@ -1313,11 +1315,13 @@ function Dashboard({
   metrics,
   onQuick,
   onNavigate,
+  onSave,
 }: {
   state: AppState;
   metrics: ReturnType<typeof calculateMetrics>;
   onQuick: () => void;
   onNavigate: (page: PageId) => void;
+  onSave?: (next: AppState, message: string) => void;
 }) {
   const [selectedTx, setSelectedTx] = useState<AppState["transactions"][number] | null>(null);
   const recent = state.transactions.slice(0, 5);
@@ -1515,6 +1519,7 @@ function Dashboard({
           transaction={selectedTx}
           state={state}
           onClose={() => setSelectedTx(null)}
+          onSave={onSave}
         />
       )}
     </div>
@@ -2249,10 +2254,14 @@ function Invoices({
         >
           تخصیص گروهی چک به فاکتور
         </button>
-        <button
-          type="button"
-          className="button button-ghost button-small"
-          onClick={() => {
+        <PrintActionMenu
+          title="طومار فاکتورها (لنداسکیپ)"
+          filename="طومار-فاکتورها"
+          getTargetElement={() =>
+            document.getElementById("invoices-table-panel") ||
+            (document.querySelector(".panel.table-panel") as HTMLElement) || document.body
+          }
+          onDirectPrint={() => {
             setPrintingInvoices(true);
             setExpandedInvoiceIds(new Set(sortedInvoices.map(inv => inv.id)));
             window.setTimeout(
@@ -2260,11 +2269,11 @@ function Invoices({
               0
             );
           }}
-        >
-          چاپ طومار فاکتورها برای مشتری (افقی)
-        </button>
+          buttonLabel="چاپ و دانلود طومار فاکتورها"
+          className="button button-ghost button-small"
+        />
       </div>
-      <div className="panel table-panel">
+      <div className="panel table-panel" id="invoices-table-panel">
         <div className="panel-heading">
           <div>
             {state.issuedChecks.length > 0 && (
@@ -3140,7 +3149,7 @@ function Invoices({
           title={`جزئیات فاکتور ${selectedInvoice.number}`}
           onClose={() => setSelectedInvoice(null)}
         >
-          <div className="invoice-detail">
+          <div className="invoice-detail" id={`legacy-invoice-detail-${selectedInvoice.id}`}>
             <div className="print-customer-summary">
               خلاصه وضعیت فاکتور {selectedInvoice.number} · {personName(state, selectedInvoice.partyId)}
             </div>
@@ -3224,18 +3233,17 @@ function Invoices({
             <div className="form-actions">
               {selectedInvoice.status !== "باطل" ? (
                 <>
-                  <button
+                  <PrintActionMenu
+                    title={`فاکتور شماره ${selectedInvoice.number} (${invoiceDirectionLabel(selectedInvoice.type)})`}
+                    filename={`فاکتور-${selectedInvoice.number}`}
+                    getTargetElement={() =>
+                      document.getElementById(`legacy-invoice-detail-${selectedInvoice.id}`) ||
+                      (document.querySelector(".invoice-detail") as HTMLElement)
+                    }
+                    onDirectPrint={() => printWithTarget("invoice")}
+                    buttonLabel="چاپ و دانلود طومار فاکتور"
                     className="button button-ghost"
-                    onClick={() => printWithTarget("invoice")}
-                  >
-                    چاپ فاکتور
-                  </button>
-                  <button
-                    className="button button-ghost"
-                    onClick={() => printWithTarget("invoice", true)}
-                  >
-                    چاپ فاکتور (افقی)
-                  </button>
+                  />
                   {selectedInvoice.paidAmount === 0 && (
                     <button
                       className="button button-ghost"
@@ -3282,6 +3290,7 @@ function Invoices({
           person={selectedPersonForLedger}
           state={state}
           onClose={() => setSelectedPersonForLedger(null)}
+          onSave={onSave}
         />
       )}
       {selectedCheckForDetail && (
@@ -3289,6 +3298,7 @@ function Invoices({
           check={selectedCheckForDetail}
           state={state}
           onClose={() => setSelectedCheckForDetail(null)}
+          onSave={onSave}
           onOpenParty={p => setSelectedPersonForLedger(p)}
         />
       )}
@@ -3925,6 +3935,7 @@ function BankAccounts({
           account={selectedAccount}
           state={state}
           onClose={() => setSelectedAccount(null)}
+          onSave={onSave}
         />
       )}
     </div>
@@ -4115,6 +4126,7 @@ function PayrollPage({
           person={selectedPersonForLedger}
           state={state}
           onClose={() => setSelectedPersonForLedger(null)}
+          onSave={onSave}
         />
       )}
       {selectedAccountForLedger && (
@@ -4122,6 +4134,7 @@ function PayrollPage({
           account={selectedAccountForLedger}
           state={state}
           onClose={() => setSelectedAccountForLedger(null)}
+          onSave={onSave}
         />
       )}
     </div>
@@ -5288,6 +5301,7 @@ function Transactions({
           transaction={selectedTransaction}
           state={state}
           onClose={() => setSelectedTransaction(null)}
+          onSave={onSave}
         />
       )}
     </div>
@@ -5609,6 +5623,7 @@ function People({
           person={selectedPerson}
           state={state}
           onClose={() => setSelectedPerson(null)}
+          onSave={onSave}
         />
       )}
     </div>
@@ -7705,9 +7720,14 @@ function Checks({
         >
           خروجی CSV
         </button>
-        <button
-          className="button button-ghost button-small"
-          onClick={() => {
+        <PrintActionMenu
+          title="طومار فهرست چک‌های کارگاه"
+          filename="طومار-چک‌ها"
+          getTargetElement={() =>
+            document.getElementById("checks-table-panel") ||
+            (document.querySelector(".panel.table-panel") as HTMLElement) || document.body
+          }
+          onDirectPrint={() => {
             setPrintingChecks(true);
             setExpandedCheckIds(new Set(visibleChecks.map(check => check.id)));
             window.setTimeout(
@@ -7715,9 +7735,9 @@ function Checks({
               0
             );
           }}
-        >
-          چاپ طومار چک‌ها برای مشتری (افقی)
-        </button>
+          buttonLabel="چاپ و دانلود طومار چک‌ها"
+          className="button button-ghost button-small"
+        />
         <button
           className="button button-primary button-small"
           onClick={recalculateAllocations}
@@ -7725,7 +7745,7 @@ function Checks({
           محاسبه مجدد تخصیص‌ها
         </button>
       </div>
-      <div className="panel table-panel">
+      <div className="panel table-panel" id="checks-table-panel">
         <div className="panel-heading">
           <div>
             <span className="section-kicker">دفتر چک</span>
@@ -8525,6 +8545,7 @@ function Checks({
           person={selectedPersonForLedger}
           state={state}
           onClose={() => setSelectedPersonForLedger(null)}
+          onSave={onSave}
         />
       )}
       {selectedInvoiceForDetail && (
@@ -8532,6 +8553,7 @@ function Checks({
           invoice={selectedInvoiceForDetail}
           state={state}
           onClose={() => setSelectedInvoiceForDetail(null)}
+          onSave={onSave}
           onOpenParty={p => setSelectedPersonForLedger(p)}
         />
       )}
@@ -8540,6 +8562,7 @@ function Checks({
           check={selectedCheckForDetail}
           state={state}
           onClose={() => setSelectedCheckForDetail(null)}
+          onSave={onSave}
           onOpenParty={p => setSelectedPersonForLedger(p)}
           onOpenInvoice={i => setSelectedInvoiceForDetail(i)}
         />
@@ -8731,7 +8754,7 @@ function MonthClose({
     URL.revokeObjectURL(url);
   }
   return (
-    <div className="page-stack page-enter month-close-page">
+    <div className="page-stack page-enter month-close-page" id="month-close-page-content">
       <PageIntro
         kicker="کنترل پایان دوره"
         title="بستن ماه"
@@ -8758,9 +8781,17 @@ function MonthClose({
         }}
       />
       <div className="month-close-actions">
-        <button className="button button-ghost" onClick={() => printWithTarget("month-close")}>
-          چاپ گزارش / ذخیره PDF
-        </button>
+        <PrintActionMenu
+          title={`گزارش بستن ماه: ${personName(state, partyId) || "مشتری"}`}
+          filename={`بستن-ماه-${(personName(state, partyId) || "مشتری").replace(/\s+/g, "_")}`}
+          getTargetElement={() =>
+            document.getElementById("month-close-page-content") ||
+            (document.querySelector(".month-close-page") as HTMLElement) || document.body
+          }
+          onDirectPrint={() => printWithTarget("month-close")}
+          buttonLabel="چاپ و دانلود طومار بستن ماه"
+          className="button button-ghost"
+        />
         <button className="button button-ghost" onClick={downloadDetails}>
           خروجی جزئیات CSV
         </button>
@@ -9378,7 +9409,7 @@ function Reports({
   );
   const integrityFindings = useMemo(() => auditDataIntegrity(state), [state]);
   return (
-    <div className="page-stack page-enter reports-page">
+    <div className="page-stack page-enter reports-page" id="reports-page-content">
       <PageIntro
         kicker="دید مدیریتی"
         title="گزارش‌ها"
@@ -9398,6 +9429,19 @@ function Reports({
           URL.revokeObjectURL(url);
         }}
       />
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: -8, marginBottom: 14 }}>
+        <PrintActionMenu
+          title="گزارش جامع مدیریت مالی کارگاه"
+          filename="گزارش-جامع-کارگاه"
+          getTargetElement={() =>
+            document.getElementById("reports-page-content") ||
+            (document.querySelector(".reports-page") as HTMLElement) || document.body
+          }
+          onDirectPrint={() => window.print()}
+          buttonLabel="چاپ و دانلود طومار گزارش‌ها"
+          className="button button-ghost button-small"
+        />
+      </div>
       <div className="report-grid">
         <div className="panel report-highlight">
           <span className="section-kicker">خالص گردش نقدی</span>
@@ -9723,12 +9767,16 @@ function Reports({
             <h3>گردش کامل مشتری</h3>
           </div>
           <div className="panel-heading-actions">
-            <button
+            <PrintActionMenu
+              title={`صورت‌حساب تفصیلی مشتری: ${personName(state, statementPartyId) || "مشتری"}`}
+              filename={`صورتحساب-${(personName(state, statementPartyId) || "مشتری").replace(/\s+/g, "_")}`}
+              getTargetElement={() =>
+                (document.querySelector(".customer-statement-panel") as HTMLElement) || document.body
+              }
+              onDirectPrint={() => printWithTarget("statement")}
+              buttonLabel="چاپ و دانلود طومار"
               className="button button-ghost"
-              onClick={() => printWithTarget("statement")}
-            >
-              چاپ
-            </button>
+            />
             <button className="button button-ghost" onClick={downloadStatement}>
               خروجی CSV
             </button>
@@ -9809,12 +9857,16 @@ function Reports({
             <span className="section-kicker">دفتر معین و تفصیلی</span>
             <h3>گردش حساب و طرف حساب</h3>
           </div>
-          <button
+          <PrintActionMenu
+            title="دفتر معین و گردش حساب‌ها"
+            filename="دفتر-معین"
+            getTargetElement={() =>
+              (document.querySelector(".panel.ledger-panel") as HTMLElement) || document.body
+            }
+            onDirectPrint={() => printWithTarget("ledger")}
+            buttonLabel="چاپ و دانلود طومار دفتر"
             className="button button-ghost"
-            onClick={() => printWithTarget("ledger")}
-          >
-            چاپ دفتر
-          </button>
+          />
         </div>
         <div className="ledger-controls">
           <div className="segmented-control">

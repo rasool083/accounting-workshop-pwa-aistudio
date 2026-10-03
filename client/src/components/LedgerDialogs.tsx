@@ -23,6 +23,10 @@ import {
   Receipt,
   Info,
   ChevronLeft,
+  Pencil,
+  Trash2,
+  Plus,
+  Save,
 } from "lucide-react";
 import {
   AppState,
@@ -38,7 +42,22 @@ import {
   personName,
   partyBalanceDescriptor,
   settleChecksFIFO,
+  todayJalali,
 } from "@/lib/accounting";
+import { PrintActionMenu } from "@/components/PrintPDFModal";
+import {
+  deleteTransactionAndRevert,
+  editTransactionAndRevert,
+  deleteInvoiceAndRevert,
+  editInvoiceAndRevert,
+  deleteInvoiceItemAndRevert,
+  editInvoiceItemAndRevert,
+  addInvoiceItemAndApply,
+  deleteCheckAndRevert,
+  editCheckAndRevert,
+  deleteCashEventAndRevert,
+  editCashEventAndRevert,
+} from "@/lib/ledgerMutations";
 
 // Helper for cash direction label
 function cashDirectionLabel(type: string) {
@@ -80,10 +99,12 @@ export function AccountLedgerDialog({
   account,
   state,
   onClose,
+  onSave,
 }: {
   account: AppState["accounts"][number];
   state: AppState;
   onClose: () => void;
+  onSave?: (next: AppState, message: string) => void;
 }) {
   const [filterType, setFilterType] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -481,21 +502,24 @@ export function AccountLedgerDialog({
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <button
-              className="button button-secondary"
-              onClick={() => window.print()}
-              title="چاپ صورت‌حساب"
+            <PrintActionMenu
+              title={`گردش حساب و دفتر معین: ${account.name} (${account.type})`}
+              filename={`گردش-حساب-${account.name.replace(/\s+/g, "_")}`}
+              getTargetElement={() =>
+                document.getElementById(`account-ledger-print-${account.id}`)
+              }
+              onDirectPrint={() => window.print()}
+              buttonLabel="چاپ و دانلود طومار"
               style={{ padding: "6px 12px", fontSize: "0.82rem" }}
-            >
-              <Printer size={15} />
-              چاپ صورت‌حساب
-            </button>
+            />
             <button className="icon-button" onClick={onClose} title="بستن">
               <X size={18} />
             </button>
           </div>
         </div>
 
+        {/* Printable Content Wrapper */}
+        <div id={`account-ledger-print-${account.id}`} style={{ width: "100%", background: "#ffffff" }}>
         {/* Account Financial Metric Strip */}
         <div className="ledger-stat-strip">
           <div className="ledger-stat-item">
@@ -826,6 +850,7 @@ export function AccountLedgerDialog({
             </tbody>
           </table>
         </div>
+        </div>
       </div>
 
       {/* Drill-down Modals */}
@@ -834,6 +859,7 @@ export function AccountLedgerDialog({
           transaction={selectedTx}
           state={state}
           onClose={() => setSelectedTx(null)}
+          onSave={onSave}
           onOpenParty={p => setSelectedPerson(p)}
           onOpenAccount={a => setInspectingAccount(a)}
           onOpenCheck={c => setSelectedCheck(c)}
@@ -845,6 +871,7 @@ export function AccountLedgerDialog({
           check={selectedCheck}
           state={state}
           onClose={() => setSelectedCheck(null)}
+          onSave={onSave}
           onOpenParty={p => setSelectedPerson(p)}
           onOpenAccount={a => setInspectingAccount(a)}
         />
@@ -855,6 +882,7 @@ export function AccountLedgerDialog({
           person={selectedPerson}
           state={state}
           onClose={() => setSelectedPerson(null)}
+          onSave={onSave}
         />
       )}
 
@@ -863,6 +891,7 @@ export function AccountLedgerDialog({
           account={inspectingAccount}
           state={state}
           onClose={() => setInspectingAccount(null)}
+          onSave={onSave}
         />
       )}
 
@@ -872,6 +901,7 @@ export function AccountLedgerDialog({
           account={account}
           state={state}
           onClose={() => setSelectedEvent(null)}
+          onSave={onSave}
           onOpenParty={p => setSelectedPerson(p)}
           onOpenCounterAccount={a => setInspectingAccount(a)}
         />
@@ -887,10 +917,12 @@ export function PartyLedgerDialog({
   person,
   state,
   onClose,
+  onSave,
 }: {
   person: Person;
   state: AppState;
   onClose: () => void;
+  onSave?: (next: AppState, message: string) => void;
 }) {
   const [activeTab, setActiveTab] = useState<
     "statement" | "invoices" | "checks" | "issuedChecks" | "transactions"
@@ -1120,21 +1152,24 @@ export function PartyLedgerDialog({
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <button
-              className="button button-secondary"
-              onClick={() => window.print()}
-              title="چاپ صورت‌حساب"
+            <PrintActionMenu
+              title={`صورت‌حساب و پرونده مالی: ${person.name}`}
+              filename={`صورتحساب-${person.name.replace(/\s+/g, "_")}`}
+              getTargetElement={() =>
+                document.getElementById(`party-ledger-print-${person.id}`)
+              }
+              onDirectPrint={() => window.print()}
+              buttonLabel="چاپ و دانلود طومار"
               style={{ padding: "6px 12px", fontSize: "0.82rem" }}
-            >
-              <Printer size={15} />
-              چاپ صورت‌حساب
-            </button>
+            />
             <button className="icon-button" onClick={onClose} title="بستن">
               <X size={18} />
             </button>
           </div>
         </div>
 
+        {/* Printable Content Wrapper */}
+        <div id={`party-ledger-print-${person.id}`} style={{ width: "100%", background: "#ffffff" }}>
         {/* Financial Summary Strip */}
         <div className="ledger-stat-strip">
           <div className="ledger-stat-item">
@@ -1609,6 +1644,7 @@ export function PartyLedgerDialog({
             </table>
           )}
         </div>
+        </div>
       </div>
 
       {/* Drill-down Modals */}
@@ -1617,6 +1653,7 @@ export function PartyLedgerDialog({
           invoice={selectedInvoice}
           state={state}
           onClose={() => setSelectedInvoice(null)}
+          onSave={onSave}
           onOpenCheck={c => setSelectedCheck(c)}
         />
       )}
@@ -1626,6 +1663,7 @@ export function PartyLedgerDialog({
           check={selectedCheck}
           state={state}
           onClose={() => setSelectedCheck(null)}
+          onSave={onSave}
           onOpenInvoice={i => setSelectedInvoice(i)}
           onOpenAccount={a => setSelectedAccount(a)}
         />
@@ -1636,6 +1674,7 @@ export function PartyLedgerDialog({
           transaction={selectedTransaction}
           state={state}
           onClose={() => setSelectedTransaction(null)}
+          onSave={onSave}
           onOpenAccount={a => setSelectedAccount(a)}
           onOpenCheck={c => setSelectedCheck(c)}
         />
@@ -1646,6 +1685,7 @@ export function PartyLedgerDialog({
           account={selectedAccount}
           state={state}
           onClose={() => setSelectedAccount(null)}
+          onSave={onSave}
         />
       )}
     </div>
@@ -1659,20 +1699,52 @@ export function InvoiceDetailDialog({
   invoice,
   state,
   onClose,
+  onSave,
   onOpenParty,
   onOpenCheck,
 }: {
   invoice: Invoice;
   state: AppState;
   onClose: () => void;
+  onSave?: (next: AppState, message: string) => void;
   onOpenParty?: (person: Person) => void;
   onOpenCheck?: (check: CheckType) => void;
 }) {
+  const [currentInvoice, setCurrentInvoice] = useState<Invoice>(invoice);
   const [inspectingPerson, setInspectingPerson] = useState<Person | null>(null);
   const [inspectingCheck, setInspectingCheck] = useState<CheckType | null>(null);
 
-  const party = invoice.partyId
-    ? state.people.find(p => p.id === invoice.partyId)
+  // Edit invoice header state
+  const [isEditingInvoice, setIsEditingInvoice] = useState(false);
+  const [editInvoiceForm, setEditInvoiceForm] = useState({
+    number: currentInvoice.number,
+    date: currentInvoice.date,
+    discountAmount: currentInvoice.discountAmount || 0,
+    note: currentInvoice.note || "",
+    status: currentInvoice.status,
+  });
+
+  // Edit item state
+  const [editingItemIdx, setEditingItemIdx] = useState<number | null>(null);
+  const [itemForm, setItemForm] = useState({
+    quantity: 1,
+    unitPrice: 0,
+    description: "",
+    unit: "",
+  });
+
+  // Add item state
+  const [isAddingItem, setIsAddingItem] = useState(false);
+  const [newItemForm, setNewItemForm] = useState({
+    productId: "",
+    description: "",
+    quantity: 1,
+    unitPrice: 0,
+    unit: "",
+  });
+
+  const party = currentInvoice.partyId
+    ? state.people.find(p => p.id === currentInvoice.partyId)
     : undefined;
 
   // Compute FIFO check allocations for this invoice
@@ -1683,13 +1755,82 @@ export function InvoiceDetailDialog({
       state.paymentRules,
       state.settings.dayBasis,
       state.checkGroupAllocations || []
-    ).filter(item => item.invoiceId === invoice.id);
-  }, [state, invoice.id]);
+    ).filter(item => item.invoiceId === currentInvoice.id);
+  }, [state, currentInvoice.id]);
 
-  const itemsTotal = (invoice.items || []).reduce(
+  const itemsTotal = (currentInvoice.items || []).reduce(
     (sum, item) => sum + (Number(item.quantity) || 0) * (Number(item.unitPrice) || 0),
     0
   );
+
+  function handleDeleteInvoice() {
+    if (
+      !window.confirm(
+        `آیا از حذف کامل فاکتور شماره ${currentInvoice.number} مطمئنید؟\nکالاهای این فاکتور به انبار بازگشت داده شده و کلیه تسویه‌ها برگشت خواهند خورد.`
+      )
+    )
+      return;
+    const res = deleteInvoiceAndRevert(state, currentInvoice.id);
+    onSave?.(res.nextState, res.message);
+    onClose();
+  }
+
+  function handleSaveInvoiceHeader(e: React.FormEvent) {
+    e.preventDefault();
+    const res = editInvoiceAndRevert(state, currentInvoice.id, {
+      number: editInvoiceForm.number,
+      date: editInvoiceForm.date,
+      discountAmount: Number(editInvoiceForm.discountAmount) || 0,
+      note: editInvoiceForm.note,
+      status: editInvoiceForm.status as any,
+    });
+    const updated = res.nextState.invoices.find(i => i.id === currentInvoice.id);
+    if (updated) setCurrentInvoice(updated);
+    setIsEditingInvoice(false);
+    onSave?.(res.nextState, res.message);
+  }
+
+  function handleSaveItemEdit(idx: number) {
+    const res = editInvoiceItemAndRevert(state, currentInvoice.id, idx, {
+      quantity: Number(itemForm.quantity) || 1,
+      unitPrice: Number(itemForm.unitPrice) || 0,
+      description: itemForm.description,
+      unit: itemForm.unit,
+    });
+    const updated = res.nextState.invoices.find(i => i.id === currentInvoice.id);
+    if (updated) setCurrentInvoice(updated);
+    setEditingItemIdx(null);
+    onSave?.(res.nextState, res.message);
+  }
+
+  function handleDeleteItem(idx: number, itemDesc: string) {
+    if (
+      !window.confirm(
+        `قلم «${itemDesc}» حذف شود؟\nاثر آن بر موجودی انبار و مبلغ کل فاکتور بلافاصله برگشت داده می‌شود.`
+      )
+    )
+      return;
+    const res = deleteInvoiceItemAndRevert(state, currentInvoice.id, idx);
+    const updated = res.nextState.invoices.find(i => i.id === currentInvoice.id);
+    if (updated) setCurrentInvoice(updated);
+    onSave?.(res.nextState, res.message);
+  }
+
+  function handleAddNewItem(e: React.FormEvent) {
+    e.preventDefault();
+    const res = addInvoiceItemAndApply(state, currentInvoice.id, {
+      productId: newItemForm.productId || undefined,
+      description: newItemForm.description,
+      quantity: Number(newItemForm.quantity) || 1,
+      unitPrice: Number(newItemForm.unitPrice) || 0,
+      unit: newItemForm.unit,
+    });
+    const updated = res.nextState.invoices.find(i => i.id === currentInvoice.id);
+    if (updated) setCurrentInvoice(updated);
+    setIsAddingItem(false);
+    setNewItemForm({ productId: "", description: "", quantity: 1, unitPrice: 0, unit: "" });
+    onSave?.(res.nextState, res.message);
+  }
 
   return (
     <div className="dialog-backdrop" onMouseDown={onClose}>
@@ -1704,39 +1845,192 @@ export function InvoiceDetailDialog({
             <span className="section-kicker">دفتر فاکتورها</span>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 4 }}>
               <h3 style={{ margin: 0 }}>
-                فاکتور {invoice.type}: {invoice.number}
+                فاکتور {currentInvoice.type}: {currentInvoice.number}
               </h3>
               <span
                 className={`status-pill ${
-                  invoice.type === "فروش" ? "status-success" : "status-warning"
+                  currentInvoice.type === "فروش" ? "status-success" : "status-warning"
                 }`}
               >
-                {invoice.type}
+                {currentInvoice.type}
               </span>
               <span
                 className={`status-pill ${
-                  invoice.status === "تسویه شده" ? "status-success" : "status-warning"
+                  currentInvoice.status === "تسویه شده" ? "status-success" : "status-warning"
                 }`}
               >
-                {invoice.status}
+                {currentInvoice.status}
               </span>
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <button
-              className="button button-secondary"
-              onClick={() => window.print()}
-              title="چاپ فاکتور"
+            <PrintActionMenu
+              title={`فاکتور ${currentInvoice.type}: ${currentInvoice.number}`}
+              filename={`فاکتور-${currentInvoice.number}`}
+              getTargetElement={() =>
+                document.getElementById(`invoice-detail-print-${currentInvoice.id}`)
+              }
+              onDirectPrint={() => window.print()}
+              buttonLabel="چاپ و دانلود طومار"
               style={{ padding: "6px 12px", fontSize: "0.82rem" }}
-            >
-              <Printer size={15} />
-              چاپ فاکتور
-            </button>
+            />
+            {onSave && (
+              <>
+                <button
+                  className="button button-ghost button-small"
+                  onClick={() => {
+                    setIsEditingInvoice(!isEditingInvoice);
+                    setEditInvoiceForm({
+                      number: currentInvoice.number,
+                      date: currentInvoice.date,
+                      discountAmount: currentInvoice.discountAmount || 0,
+                      note: currentInvoice.note || "",
+                      status: currentInvoice.status,
+                    });
+                  }}
+                  title="ویرایش مشخصات فاکتور"
+                  style={{ color: "#0369a1" }}
+                >
+                  <Pencil size={15} />
+                  {isEditingInvoice ? "لغو ویرایش" : "ویرایش فاکتور"}
+                </button>
+                <button
+                  className="button button-ghost button-small"
+                  onClick={handleDeleteInvoice}
+                  title="حذف کامل فاکتور و بازگشت کالاها به انبار"
+                  style={{ color: "#dc2626" }}
+                >
+                  <Trash2 size={15} />
+                  حذف فاکتور
+                </button>
+              </>
+            )}
             <button className="icon-button" onClick={onClose} title="بستن">
               <X size={18} />
             </button>
           </div>
         </div>
+
+        {/* Printable Content Wrapper */}
+        <div id={`invoice-detail-print-${currentInvoice.id}`} style={{ width: "100%", background: "#ffffff" }}>
+
+        {/* Invoice Header Edit Form (when active) */}
+        {isEditingInvoice && (
+          <form
+            onSubmit={handleSaveInvoiceHeader}
+            style={{
+              background: "#f0f9ff",
+              border: "1px solid #bae6fd",
+              borderRadius: 12,
+              padding: 14,
+              marginBottom: 16,
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+            }}
+          >
+            <div style={{ fontWeight: 700, color: "#0369a1", fontSize: "0.9rem" }}>
+              ویرایش مشخصات اصلی فاکتور
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                gap: 10,
+              }}
+            >
+              <div>
+                <label style={{ fontSize: "0.78rem", color: "#475569", display: "block" }}>
+                  شماره فاکتور:
+                </label>
+                <input
+                  type="text"
+                  value={editInvoiceForm.number}
+                  onChange={e =>
+                    setEditInvoiceForm({ ...editInvoiceForm, number: e.target.value })
+                  }
+                  required
+                  style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: "0.78rem", color: "#475569", display: "block" }}>
+                  تاریخ فاکتور:
+                </label>
+                <input
+                  type="text"
+                  value={editInvoiceForm.date}
+                  onChange={e =>
+                    setEditInvoiceForm({ ...editInvoiceForm, date: e.target.value })
+                  }
+                  required
+                  style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: "0.78rem", color: "#475569", display: "block" }}>
+                  تخفیف فاکتور:
+                </label>
+                <input
+                  type="number"
+                  value={editInvoiceForm.discountAmount}
+                  onChange={e =>
+                    setEditInvoiceForm({
+                      ...editInvoiceForm,
+                      discountAmount: Number(e.target.value) || 0,
+                    })
+                  }
+                  style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: "0.78rem", color: "#475569", display: "block" }}>
+                  وضعیت فاکتور:
+                </label>
+                <select
+                  value={editInvoiceForm.status}
+                  onChange={e =>
+                    setEditInvoiceForm({
+                      ...editInvoiceForm,
+                      status: e.target.value as any,
+                    })
+                  }
+                  style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                >
+                  <option value="باز">باز</option>
+                  <option value="تسویه جزئی">تسویه جزئی</option>
+                  <option value="تسویه شده">تسویه شده</option>
+                  <option value="باطل">باطل</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label style={{ fontSize: "0.78rem", color: "#475569", display: "block" }}>
+                یادداشت یا توضیحات:
+              </label>
+              <input
+                type="text"
+                value={editInvoiceForm.note}
+                onChange={e =>
+                  setEditInvoiceForm({ ...editInvoiceForm, note: e.target.value })
+                }
+                style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+              />
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button
+                type="button"
+                className="button button-ghost button-small"
+                onClick={() => setIsEditingInvoice(false)}
+              >
+                انصراف
+              </button>
+              <button type="submit" className="button button-primary button-small">
+                ذخیره تغییرات فاکتور
+              </button>
+            </div>
+          </form>
+        )}
 
         {/* Customer & Info Card */}
         <div
@@ -1753,7 +2047,7 @@ export function InvoiceDetailDialog({
         >
           <div>
             <span style={{ fontSize: "0.8rem", color: "#64748b" }}>
-              {invoice.type === "فروش" ? "خریدار / مشتری:" : "فروشنده / تأمین‌کننده:"}
+              {currentInvoice.type === "فروش" ? "خریدار / مشتری:" : "فروشنده / تأمین‌کننده:"}
             </span>
             <div style={{ marginTop: 2 }}>
               {party ? (
@@ -1784,14 +2078,14 @@ export function InvoiceDetailDialog({
           <div>
             <span style={{ fontSize: "0.8rem", color: "#64748b" }}>تاریخ صدور فاکتور:</span>
             <div style={{ fontWeight: 700, fontSize: "1rem", marginTop: 2 }}>
-              {formatDate(invoice.date)}
+              {formatDate(currentInvoice.date)}
             </div>
           </div>
 
           <div>
             <span style={{ fontSize: "0.8rem", color: "#64748b" }}>مبلغ کل فاکتور:</span>
             <div style={{ fontWeight: 800, fontSize: "1.15rem", color: "#0f172a", marginTop: 2 }}>
-              {formatMoney(invoice.amount, state.settings.currency)}
+              {formatMoney(currentInvoice.amount, state.settings.currency)}
             </div>
           </div>
 
@@ -1801,12 +2095,15 @@ export function InvoiceDetailDialog({
               style={{
                 fontWeight: 800,
                 fontSize: "1.15rem",
-                color: invoice.amount - (invoice.paidAmount || 0) > 0 ? "#b91c1c" : "#15803d",
+                color:
+                  currentInvoice.amount - (currentInvoice.paidAmount || 0) > 0
+                    ? "#b91c1c"
+                    : "#15803d",
                 marginTop: 2,
               }}
             >
               {formatMoney(
-                Math.max(0, invoice.amount - (invoice.paidAmount || 0)),
+                Math.max(0, currentInvoice.amount - (currentInvoice.paidAmount || 0)),
                 state.settings.currency
               )}
             </div>
@@ -1815,31 +2112,231 @@ export function InvoiceDetailDialog({
 
         {/* Invoice Items Table */}
         <div style={{ marginBottom: 16 }}>
-          <strong style={{ fontSize: "0.9rem", color: "#334155", display: "block", marginBottom: 6 }}>
-            اقلام و ردیف‌های فاکتور ({formatNumber((invoice.items || []).length)} ردیف)
-          </strong>
-          <div className="table-wrap" style={{ maxHeight: 220, overflowY: "auto" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+            <strong style={{ fontSize: "0.9rem", color: "#334155" }}>
+              اقلام و ردیف‌های فاکتور ({formatNumber((currentInvoice.items || []).length)} ردیف)
+            </strong>
+            {onSave && (
+              <button
+                type="button"
+                className="button button-ghost button-small"
+                onClick={() => setIsAddingItem(!isAddingItem)}
+                style={{ fontSize: "0.78rem", color: "#0369a1", gap: 4 }}
+              >
+                <Plus size={14} />
+                افزودن قلم به فاکتور
+              </button>
+            )}
+          </div>
+
+          {/* Add Item Inline Form */}
+          {isAddingItem && (
+            <form
+              onSubmit={handleAddNewItem}
+              style={{
+                background: "#f0fdf4",
+                border: "1px solid #bbf7d0",
+                borderRadius: 10,
+                padding: 12,
+                marginBottom: 10,
+                display: "grid",
+                gridTemplateColumns: "2fr 1fr 1fr 1fr auto",
+                gap: 8,
+                alignItems: "end",
+              }}
+            >
+              <div>
+                <label style={{ fontSize: "0.74rem", color: "#374151", display: "block" }}>
+                  انتخاب کالا / عنوان:
+                </label>
+                <select
+                  value={newItemForm.productId}
+                  onChange={e => {
+                    const sel = state.products.find(p => p.id === e.target.value);
+                    setNewItemForm({
+                      ...newItemForm,
+                      productId: e.target.value,
+                      description: sel ? sel.name : "",
+                      unitPrice: sel?.price || 0,
+                      unit: sel?.unit || "عدد",
+                    });
+                  }}
+                  style={{ width: "100%", padding: "5px 6px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                >
+                  <option value="">-- کالا آزاد / دلخواه --</option>
+                  {state.products.map(p => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} (موجودی: {formatNumber(p.stock)} {p.unit})
+                    </option>
+                  ))}
+                </select>
+                {!newItemForm.productId && (
+                  <input
+                    type="text"
+                    placeholder="شرح کالا"
+                    value={newItemForm.description}
+                    onChange={e =>
+                      setNewItemForm({ ...newItemForm, description: e.target.value })
+                    }
+                    required
+                    style={{
+                      width: "100%",
+                      padding: "5px 6px",
+                      borderRadius: 6,
+                      border: "1px solid #cbd5e1",
+                      marginTop: 4,
+                    }}
+                  />
+                )}
+              </div>
+              <div>
+                <label style={{ fontSize: "0.74rem", color: "#374151", display: "block" }}>
+                  تعداد:
+                </label>
+                <input
+                  type="number"
+                  min="0.01"
+                  step="any"
+                  value={newItemForm.quantity}
+                  onChange={e =>
+                    setNewItemForm({ ...newItemForm, quantity: Number(e.target.value) || 1 })
+                  }
+                  required
+                  style={{ width: "100%", padding: "5px 6px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: "0.74rem", color: "#374151", display: "block" }}>
+                  قیمت واحد:
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={newItemForm.unitPrice}
+                  onChange={e =>
+                    setNewItemForm({ ...newItemForm, unitPrice: Number(e.target.value) || 0 })
+                  }
+                  required
+                  style={{ width: "100%", padding: "5px 6px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: "0.74rem", color: "#374151", display: "block" }}>
+                  جمع کل:
+                </label>
+                <div style={{ fontWeight: 700, padding: "5px 0", fontSize: "0.85rem" }}>
+                  {formatMoney(newItemForm.quantity * newItemForm.unitPrice, state.settings.currency)}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 4 }}>
+                <button type="submit" className="button button-primary button-small">
+                  ثبت قلم
+                </button>
+                <button
+                  type="button"
+                  className="button button-ghost button-small"
+                  onClick={() => setIsAddingItem(false)}
+                >
+                  لغو
+                </button>
+              </div>
+            </form>
+          )}
+
+          <div className="table-wrap" style={{ maxHeight: 240, overflowY: "auto" }}>
             <table>
               <thead>
                 <tr>
                   <th style={{ width: "5%" }}>#</th>
-                  <th style={{ width: "35%" }}>شرح کالا یا خدمت</th>
-                  <th style={{ width: "15%" }}>مقدار / تعداد</th>
-                  <th style={{ width: "15%" }}>واحد</th>
-                  <th style={{ width: "15%" }}>قیمت واحد</th>
+                  <th style={{ width: "30%" }}>شرح کالا یا خدمت</th>
+                  <th style={{ width: "14%" }}>مقدار / تعداد</th>
+                  <th style={{ width: "10%" }}>واحد</th>
+                  <th style={{ width: "14%" }}>قیمت واحد</th>
                   <th style={{ width: "15%" }}>جمع ردیف</th>
+                  {onSave && <th style={{ width: "12%" }}>عملیات</th>}
                 </tr>
               </thead>
               <tbody>
-                {(invoice.items || []).map((item, idx) => {
+                {(currentInvoice.items || []).map((item, idx) => {
                   const product = state.products.find(p => p.id === item.productId);
                   const qty = Number(item.quantity) || 0;
                   const price = Number(item.unitPrice) || 0;
+                  const isEditingThis = editingItemIdx === idx;
+
+                  if (isEditingThis) {
+                    return (
+                      <tr key={`edit-${idx}`} style={{ background: "#f0fdf4" }}>
+                        <td>{idx + 1}</td>
+                        <td>
+                          <strong>{product?.name || item.description}</strong>
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            step="any"
+                            value={itemForm.quantity}
+                            onChange={e =>
+                              setItemForm({
+                                ...itemForm,
+                                quantity: Number(e.target.value) || 0,
+                              })
+                            }
+                            style={{ width: "80px", padding: "4px" }}
+                          />
+                        </td>
+                        <td>{item.unit || product?.unit || "عدد"}</td>
+                        <td>
+                          <input
+                            type="number"
+                            step="any"
+                            value={itemForm.unitPrice}
+                            onChange={e =>
+                              setItemForm({
+                                ...itemForm,
+                                unitPrice: Number(e.target.value) || 0,
+                              })
+                            }
+                            style={{ width: "100px", padding: "4px" }}
+                          />
+                        </td>
+                        <td className="amount-cell">
+                          <strong>
+                            {formatMoney(
+                              itemForm.quantity * itemForm.unitPrice,
+                              state.settings.currency
+                            )}
+                          </strong>
+                        </td>
+                        <td>
+                          <div style={{ display: "flex", gap: 4 }}>
+                            <button
+                              type="button"
+                              className="button button-primary button-small"
+                              onClick={() => handleSaveItemEdit(idx)}
+                              title="ذخیره اصلاح"
+                            >
+                              <Save size={13} />
+                            </button>
+                            <button
+                              type="button"
+                              className="button button-ghost button-small"
+                              onClick={() => setEditingItemIdx(null)}
+                              title="انصراف"
+                            >
+                              <X size={13} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  }
+
                   return (
                     <tr key={`${item.productId}-${idx}`}>
                       <td>{idx + 1}</td>
                       <td>
-                        <strong>{product?.name || "کالا یا خدمت آزاد"}</strong>
+                        <strong>{product?.name || item.description}</strong>
                         {product?.code && (
                           <small className="muted-cell" style={{ marginRight: 6 }}>
                             ({product.code})
@@ -1854,6 +2351,39 @@ export function InvoiceDetailDialog({
                       <td className="amount-cell">
                         <strong>{formatMoney(qty * price, state.settings.currency)}</strong>
                       </td>
+                      {onSave && (
+                        <td>
+                          <div style={{ display: "flex", gap: 4 }}>
+                            <button
+                              type="button"
+                              className="icon-button"
+                              onClick={() => {
+                                setEditingItemIdx(idx);
+                                setItemForm({
+                                  quantity: qty,
+                                  unitPrice: price,
+                                  description: item.description,
+                                  unit: item.unit || product?.unit || "عدد",
+                                });
+                              }}
+                              title="ویرایش تعداد و قیمت این قلم"
+                            >
+                              <Pencil size={13} />
+                            </button>
+                            <button
+                              type="button"
+                              className="icon-button"
+                              onClick={() =>
+                                handleDeleteItem(idx, product?.name || item.description)
+                              }
+                              title="حذف این قلم از فاکتور و بازگشت موجودی"
+                              style={{ color: "#dc2626" }}
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+                        </td>
+                      )}
                     </tr>
                   );
                 })}
@@ -1953,7 +2483,7 @@ export function InvoiceDetailDialog({
           )}
         </div>
 
-        {invoice.note && (
+        {currentInvoice.note && (
           <div
             style={{
               marginTop: 14,
@@ -1965,9 +2495,10 @@ export function InvoiceDetailDialog({
             }}
           >
             <span style={{ color: "#64748b" }}>یادداشت فاکتور: </span>
-            <strong>{invoice.note}</strong>
+            <strong>{currentInvoice.note}</strong>
           </div>
         )}
+        </div>
       </div>
 
       {inspectingPerson && (
@@ -1975,6 +2506,7 @@ export function InvoiceDetailDialog({
           person={inspectingPerson}
           state={state}
           onClose={() => setInspectingPerson(null)}
+          onSave={onSave}
         />
       )}
 
@@ -1983,6 +2515,7 @@ export function InvoiceDetailDialog({
           check={inspectingCheck}
           state={state}
           onClose={() => setInspectingCheck(null)}
+          onSave={onSave}
         />
       )}
     </div>
@@ -1996,6 +2529,7 @@ export function CheckDetailDialog({
   check,
   state,
   onClose,
+  onSave,
   onOpenParty,
   onOpenAccount,
   onOpenInvoice,
@@ -2003,25 +2537,40 @@ export function CheckDetailDialog({
   check: CheckType | AppState["issuedChecks"][number];
   state: AppState;
   onClose: () => void;
+  onSave?: (next: AppState, message: string) => void;
   onOpenParty?: (person: Person) => void;
   onOpenAccount?: (account: AppState["accounts"][number]) => void;
   onOpenInvoice?: (invoice: Invoice) => void;
 }) {
+  const [currentCheck, setCurrentCheck] = useState<CheckType>(check as CheckType);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editForm, setEditForm] = useState({
+    number: currentCheck.number,
+    sayadNumber: (currentCheck as any).sayadNumber || "",
+    amount: currentCheck.amount,
+    dueDate: currentCheck.dueDate,
+    status: currentCheck.status,
+    bank: currentCheck.bank || "",
+    bankAccountId: currentCheck.bankAccountId || "",
+    note: currentCheck.note || "",
+    feeAmount: currentCheck.feeAmount || 0,
+  });
+
   const [inspectingPerson, setInspectingPerson] = useState<Person | null>(null);
   const [inspectingAccount, setInspectingAccount] = useState<
     AppState["accounts"][number] | null
   >(null);
   const [inspectingInvoice, setInspectingInvoice] = useState<Invoice | null>(null);
 
-  const isIssued = "beneficiaryPartyId" in check || "purpose" in check;
+  const isIssued = "beneficiaryPartyId" in currentCheck || "purpose" in currentCheck;
 
   const partyId = isIssued
-    ? (check as any).beneficiaryPartyId || (check as any).issuerPartyId
-    : (check as CheckType).partyId;
+    ? (currentCheck as any).beneficiaryPartyId || (currentCheck as any).issuerPartyId
+    : (currentCheck as CheckType).partyId;
   const party = partyId ? state.people.find(p => p.id === partyId) : undefined;
 
-  const bankAccount = check.bankAccountId
-    ? state.accounts.find(a => a.id === check.bankAccountId)
+  const bankAccount = currentCheck.bankAccountId
+    ? state.accounts.find(a => a.id === currentCheck.bankAccountId)
     : undefined;
 
   // Compute FIFO settled invoices for received checks
@@ -2033,8 +2582,39 @@ export function CheckDetailDialog({
       state.paymentRules,
       state.settings.dayBasis,
       state.checkGroupAllocations || []
-    ).filter(item => item.checkId === check.id);
-  }, [state, check.id, isIssued]);
+    ).filter(item => item.checkId === currentCheck.id);
+  }, [state, currentCheck.id, isIssued]);
+
+  function handleDeleteCheck() {
+    if (
+      !window.confirm(
+        `آیا از حذف چک شماره ${currentCheck.number} مطمئنید؟\nدر صورت وصول بودن، اثر آن بر مانده حساب بانک معکوس شده و کلیه تسویه‌های فاکتور لغو می‌شود.`
+      )
+    )
+      return;
+    const res = deleteCheckAndRevert(state, currentCheck.id);
+    onSave?.(res.nextState, res.message);
+    onClose();
+  }
+
+  function handleSaveCheck(e: React.FormEvent) {
+    e.preventDefault();
+    const res = editCheckAndRevert(state, currentCheck.id, {
+      number: editForm.number,
+      sayadNumber: editForm.sayadNumber,
+      amount: Number(editForm.amount) || 0,
+      dueDate: editForm.dueDate,
+      status: editForm.status as any,
+      bank: editForm.bank,
+      bankAccountId: editForm.bankAccountId || undefined,
+      note: editForm.note,
+      feeAmount: Number(editForm.feeAmount) || 0,
+    });
+    const updated = res.nextState.checks.find(c => c.id === currentCheck.id);
+    if (updated) setCurrentCheck(updated);
+    setIsEditing(false);
+    onSave?.(res.nextState, res.message);
+  }
 
   return (
     <div className="dialog-backdrop" onMouseDown={onClose}>
@@ -2052,29 +2632,222 @@ export function CheckDetailDialog({
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 4 }}>
               <h3 style={{ margin: 0 }}>
                 {isIssued ? "چک صادره" : "چک دریافتی"} شماره:{" "}
-                {(check as any).sayadNumber || check.number}
+                {(currentCheck as any).sayadNumber || currentCheck.number}
               </h3>
-              <span className={`status-pill`}>{check.status}</span>
-              {!(check as any).sayadNumber && (
+              <span className={`status-pill`}>{currentCheck.status}</span>
+              {!(currentCheck as any).sayadNumber && (
                 <small className="muted-cell">چک سنتی / عادی</small>
               )}
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <button
-              className="button button-secondary"
-              onClick={() => window.print()}
-              title="چاپ مشخصات چک"
+            <PrintActionMenu
+              title={`چک ${currentCheck.number} (${currentCheck.status})`}
+              filename={`چک-${currentCheck.number}`}
+              getTargetElement={() =>
+                document.getElementById(`check-detail-print-${currentCheck.id}`)
+              }
+              onDirectPrint={() => window.print()}
+              buttonLabel="چاپ و دانلود طومار"
               style={{ padding: "6px 12px", fontSize: "0.82rem" }}
-            >
-              <Printer size={15} />
-              چاپ چک
-            </button>
+            />
+            {onSave && !isIssued && (
+              <>
+                <button
+                  className="button button-ghost button-small"
+                  onClick={() => {
+                    setIsEditing(!isEditing);
+                    setEditForm({
+                      number: currentCheck.number,
+                      sayadNumber: (currentCheck as any).sayadNumber || "",
+                      amount: currentCheck.amount,
+                      dueDate: currentCheck.dueDate,
+                      status: currentCheck.status,
+                      bank: currentCheck.bank || "",
+                      bankAccountId: currentCheck.bankAccountId || "",
+                      note: currentCheck.note || "",
+                      feeAmount: currentCheck.feeAmount || 0,
+                    });
+                  }}
+                  title="ویرایش مشخصات چک"
+                  style={{ color: "#0369a1" }}
+                >
+                  <Pencil size={15} />
+                  {isEditing ? "لغو ویرایش" : "ویرایش چک"}
+                </button>
+                <button
+                  className="button button-ghost button-small"
+                  onClick={handleDeleteCheck}
+                  title="حذف کامل چک و برگشت آثار مالی"
+                  style={{ color: "#dc2626" }}
+                >
+                  <Trash2 size={15} />
+                  حذف چک
+                </button>
+              </>
+            )}
             <button className="icon-button" onClick={onClose} title="بستن">
               <X size={18} />
             </button>
           </div>
         </div>
+
+        {/* Printable Content Wrapper */}
+        <div id={`check-detail-print-${currentCheck.id}`} style={{ width: "100%", background: "#ffffff" }}>
+
+        {/* Check Edit Form (when active) */}
+        {isEditing && (
+          <form
+            onSubmit={handleSaveCheck}
+            style={{
+              background: "#f0f9ff",
+              border: "1px solid #bae6fd",
+              borderRadius: 12,
+              padding: 14,
+              marginBottom: 16,
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+            }}
+          >
+            <div style={{ fontWeight: 700, color: "#0369a1", fontSize: "0.9rem" }}>
+              ویرایش مشخصات و وضعیت چک
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
+                gap: 10,
+              }}
+            >
+              <div>
+                <label style={{ fontSize: "0.78rem", color: "#475569", display: "block" }}>
+                  شماره چک:
+                </label>
+                <input
+                  type="text"
+                  value={editForm.number}
+                  onChange={e => setEditForm({ ...editForm, number: e.target.value })}
+                  required
+                  style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: "0.78rem", color: "#475569", display: "block" }}>
+                  شناسه صیادی (۱۶ رقمی):
+                </label>
+                <input
+                  type="text"
+                  value={editForm.sayadNumber}
+                  onChange={e => setEditForm({ ...editForm, sayadNumber: e.target.value })}
+                  style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: "0.78rem", color: "#475569", display: "block" }}>
+                  مبلغ چک:
+                </label>
+                <input
+                  type="number"
+                  value={editForm.amount}
+                  onChange={e => setEditForm({ ...editForm, amount: Number(e.target.value) || 0 })}
+                  required
+                  style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: "0.78rem", color: "#475569", display: "block" }}>
+                  تاریخ سررسید:
+                </label>
+                <input
+                  type="text"
+                  value={editForm.dueDate}
+                  onChange={e => setEditForm({ ...editForm, dueDate: e.target.value })}
+                  required
+                  style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: "0.78rem", color: "#475569", display: "block" }}>
+                  وضعیت چک:
+                </label>
+                <select
+                  value={editForm.status}
+                  onChange={e => setEditForm({ ...editForm, status: e.target.value as any })}
+                  style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                >
+                  <option value="در جریان وصول">در جریان وصول</option>
+                  <option value="وصول شده">وصول شده</option>
+                  <option value="برگشتی">برگشتی</option>
+                  <option value="عودت">عودت داده شده</option>
+                  <option value="باطل">باطل</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: "0.78rem", color: "#475569", display: "block" }}>
+                  بانک / شعبه:
+                </label>
+                <input
+                  type="text"
+                  value={editForm.bank}
+                  onChange={e => setEditForm({ ...editForm, bank: e.target.value })}
+                  style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: "0.78rem", color: "#475569", display: "block" }}>
+                  حساب بانکی وصول/واریز:
+                </label>
+                <select
+                  value={editForm.bankAccountId}
+                  onChange={e => setEditForm({ ...editForm, bankAccountId: e.target.value })}
+                  style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                >
+                  <option value="">-- بدون حساب بانکی --</option>
+                  {state.accounts.map(a => (
+                    <option key={a.id} value={a.id}>
+                      {a.name} ({a.type})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: "0.78rem", color: "#475569", display: "block" }}>
+                  کارمزد یا سود:
+                </label>
+                <input
+                  type="number"
+                  value={editForm.feeAmount}
+                  onChange={e => setEditForm({ ...editForm, feeAmount: Number(e.target.value) || 0 })}
+                  style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                />
+              </div>
+            </div>
+            <div>
+              <label style={{ fontSize: "0.78rem", color: "#475569", display: "block" }}>
+                یادداشت:
+              </label>
+              <input
+                type="text"
+                value={editForm.note}
+                onChange={e => setEditForm({ ...editForm, note: e.target.value })}
+                style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+              />
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button
+                type="button"
+                className="button button-ghost button-small"
+                onClick={() => setIsEditing(false)}
+              >
+                انصراف
+              </button>
+              <button type="submit" className="button button-primary button-small">
+                ذخیره تغییرات چک
+              </button>
+            </div>
+          </form>
+        )}
 
         {/* Main Details Strip */}
         <div
@@ -2322,9 +3095,10 @@ export function CheckDetailDialog({
             }}
           >
             <span style={{ color: "#64748b", fontSize: "0.8rem" }}>بابت / شرح صدور: </span>
-            <strong>{(check as any).purpose || "—"}</strong>
+            <strong>{(currentCheck as any).purpose || "—"}</strong>
           </div>
         )}
+        </div>
       </div>
 
       {inspectingPerson && (
@@ -2332,6 +3106,7 @@ export function CheckDetailDialog({
           person={inspectingPerson}
           state={state}
           onClose={() => setInspectingPerson(null)}
+          onSave={onSave}
         />
       )}
 
@@ -2340,6 +3115,7 @@ export function CheckDetailDialog({
           account={inspectingAccount}
           state={state}
           onClose={() => setInspectingAccount(null)}
+          onSave={onSave}
         />
       )}
 
@@ -2348,6 +3124,7 @@ export function CheckDetailDialog({
           invoice={inspectingInvoice}
           state={state}
           onClose={() => setInspectingInvoice(null)}
+          onSave={onSave}
         />
       )}
     </div>
@@ -2361,6 +3138,7 @@ export function TransactionDetailDialog({
   transaction,
   state,
   onClose,
+  onSave,
   onOpenParty,
   onOpenAccount,
   onOpenCheck,
@@ -2368,54 +3146,282 @@ export function TransactionDetailDialog({
   transaction: Transaction;
   state: AppState;
   onClose: () => void;
+  onSave?: (next: AppState, message: string) => void;
   onOpenParty?: (person: Person) => void;
   onOpenAccount?: (account: AppState["accounts"][number]) => void;
   onOpenCheck?: (check: CheckType) => void;
 }) {
+  const [currentTx, setCurrentTx] = useState<Transaction>(transaction);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editForm, setEditForm] = useState({
+    amount: currentTx.amount,
+    date: currentTx.date,
+    type: currentTx.type,
+    accountId: currentTx.accountId || "",
+    fromAccountId: currentTx.fromAccountId || "",
+    toAccountId: currentTx.toAccountId || "",
+    partyId: currentTx.partyId || "",
+    note: currentTx.note || "",
+    feeAmount: currentTx.feeAmount || 0,
+    partnerEffect: currentTx.partnerEffect,
+  });
+
   const [inspectingPerson, setInspectingPerson] = useState<Person | null>(null);
   const [inspectingAccount, setInspectingAccount] = useState<
     AppState["accounts"][number] | null
   >(null);
   const [inspectingCheck, setInspectingCheck] = useState<CheckType | null>(null);
 
-  const party = transaction.partyId
-    ? state.people.find(p => p.id === transaction.partyId)
+  const party = currentTx.partyId
+    ? state.people.find(p => p.id === currentTx.partyId)
     : undefined;
-  const account = transaction.accountId
-    ? state.accounts.find(a => a.id === transaction.accountId)
+  const account = currentTx.accountId
+    ? state.accounts.find(a => a.id === currentTx.accountId)
     : undefined;
-  const fromAccount = transaction.fromAccountId
-    ? state.accounts.find(a => a.id === transaction.fromAccountId)
+  const fromAccount = currentTx.fromAccountId
+    ? state.accounts.find(a => a.id === currentTx.fromAccountId)
     : undefined;
-  const toAccount = transaction.toAccountId
-    ? state.accounts.find(a => a.id === transaction.toAccountId)
+  const toAccount = currentTx.toAccountId
+    ? state.accounts.find(a => a.id === currentTx.toAccountId)
     : undefined;
-  const product = transaction.productId
-    ? state.products.find(p => p.id === transaction.productId)
+  const product = currentTx.productId
+    ? state.products.find(p => p.id === currentTx.productId)
     : undefined;
-  const warehouse = transaction.warehouseId
-    ? state.warehouses.find(w => w.id === transaction.warehouseId)
+  const warehouse = currentTx.warehouseId
+    ? state.warehouses.find(w => w.id === currentTx.warehouseId)
     : undefined;
-  const check = transaction.checkId
-    ? state.checks.find(c => c.id === transaction.checkId)
+  const check = currentTx.checkId
+    ? state.checks.find(c => c.id === currentTx.checkId)
     : undefined;
+
+  function handleDeleteTransaction() {
+    if (
+      !window.confirm(
+        `آیا از حذف این سند مالی مطمئنید؟\nاثر آن بر مانده حساب‌ها و موجودی کالا به حالت پیش از این تراکنش بازگردانده می‌شود.`
+      )
+    )
+      return;
+    const res = deleteTransactionAndRevert(state, currentTx.id);
+    onSave?.(res.nextState, res.message);
+    onClose();
+  }
+
+  function handleSaveTransaction(e: React.FormEvent) {
+    e.preventDefault();
+    const res = editTransactionAndRevert(state, currentTx.id, {
+      amount: Number(editForm.amount) || 0,
+      date: editForm.date,
+      type: editForm.type as any,
+      accountId: editForm.accountId || undefined,
+      fromAccountId: editForm.fromAccountId || undefined,
+      toAccountId: editForm.toAccountId || undefined,
+      partyId: editForm.partyId || undefined,
+      note: editForm.note,
+      feeAmount: Number(editForm.feeAmount) || 0,
+      partnerEffect: editForm.partnerEffect as any,
+    });
+    const updated = res.nextState.transactions.find(t => t.id === currentTx.id);
+    if (updated) setCurrentTx(updated);
+    setIsEditing(false);
+    onSave?.(res.nextState, res.message);
+  }
 
   return (
     <div className="dialog-backdrop" onMouseDown={onClose}>
       <div
         className="dialog"
         onMouseDown={e => e.stopPropagation()}
-        style={{ width: "min(580px, 95vw)" }}
+        style={{ width: "min(640px, 95vw)" }}
       >
         <div className="dialog-header">
           <div>
             <span className="section-kicker">دفتر عملیات مالی</span>
-            <h3>جزئیات سند: {transaction.type}</h3>
+            <h3>جزئیات سند: {currentTx.type}</h3>
           </div>
-          <button className="icon-button" onClick={onClose} title="بستن">
-            <X size={18} />
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <PrintActionMenu
+              title={`سند مالی: ${currentTx.type} (${formatDate(currentTx.date)})`}
+              filename={`سند-${currentTx.type.replace(/\s+/g, "_")}`}
+              getTargetElement={() =>
+                document.getElementById(`transaction-detail-print-${currentTx.id}`)
+              }
+              onDirectPrint={() => window.print()}
+              buttonLabel="چاپ و دانلود"
+              style={{ padding: "5px 10px", fontSize: "0.8rem" }}
+            />
+            {onSave && (
+              <>
+                <button
+                  className="button button-ghost button-small"
+                  onClick={() => {
+                    setIsEditing(!isEditing);
+                    setEditForm({
+                      amount: currentTx.amount,
+                      date: currentTx.date,
+                      type: currentTx.type,
+                      accountId: currentTx.accountId || "",
+                      fromAccountId: currentTx.fromAccountId || "",
+                      toAccountId: currentTx.toAccountId || "",
+                      partyId: currentTx.partyId || "",
+                      note: currentTx.note || "",
+                      feeAmount: currentTx.feeAmount || 0,
+                      partnerEffect: currentTx.partnerEffect,
+                    });
+                  }}
+                  title="ویرایش این سند"
+                  style={{ color: "#0369a1" }}
+                >
+                  <Pencil size={14} />
+                  {isEditing ? "لغو ویرایش" : "ویرایش"}
+                </button>
+                <button
+                  className="button button-ghost button-small"
+                  onClick={handleDeleteTransaction}
+                  title="حذف سند و بازگشت مانده حساب‌ها"
+                  style={{ color: "#dc2626" }}
+                >
+                  <Trash2 size={14} />
+                  حذف
+                </button>
+              </>
+            )}
+            <button className="icon-button" onClick={onClose} title="بستن">
+              <X size={18} />
+            </button>
+          </div>
         </div>
+
+        {/* Printable Content Wrapper */}
+        <div id={`transaction-detail-print-${currentTx.id}`} style={{ width: "100%", background: "#ffffff" }}>
+
+        {/* Edit Form */}
+        {isEditing && (
+          <form
+            onSubmit={handleSaveTransaction}
+            style={{
+              background: "#f0f9ff",
+              border: "1px solid #bae6fd",
+              borderRadius: 12,
+              padding: 12,
+              marginBottom: 14,
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+            }}
+          >
+            <div style={{ fontWeight: 700, color: "#0369a1", fontSize: "0.88rem" }}>
+              ویرایش سند مالی و اثرات حسابی
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <div>
+                <label style={{ fontSize: "0.76rem", color: "#475569", display: "block" }}>
+                  مبلغ:
+                </label>
+                <input
+                  type="number"
+                  value={editForm.amount}
+                  onChange={e => setEditForm({ ...editForm, amount: Number(e.target.value) || 0 })}
+                  required
+                  style={{ width: "100%", padding: "5px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: "0.76rem", color: "#475569", display: "block" }}>
+                  تاریخ:
+                </label>
+                <input
+                  type="text"
+                  value={editForm.date}
+                  onChange={e => setEditForm({ ...editForm, date: e.target.value })}
+                  required
+                  style={{ width: "100%", padding: "5px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                />
+              </div>
+            </div>
+            {currentTx.type === "انتقال بین حساب‌ها" ? (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                <div>
+                  <label style={{ fontSize: "0.76rem", color: "#475569", display: "block" }}>
+                    حساب مبدأ:
+                  </label>
+                  <select
+                    value={editForm.fromAccountId}
+                    onChange={e => setEditForm({ ...editForm, fromAccountId: e.target.value })}
+                    style={{ width: "100%", padding: "5px 6px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                  >
+                    {state.accounts.map(a => (
+                      <option key={a.id} value={a.id}>{a.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: "0.76rem", color: "#475569", display: "block" }}>
+                    حساب مقصد:
+                  </label>
+                  <select
+                    value={editForm.toAccountId}
+                    onChange={e => setEditForm({ ...editForm, toAccountId: e.target.value })}
+                    style={{ width: "100%", padding: "5px 6px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                  >
+                    {state.accounts.map(a => (
+                      <option key={a.id} value={a.id}>{a.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: "0.76rem", color: "#475569", display: "block" }}>
+                    کارمزد:
+                  </label>
+                  <input
+                    type="number"
+                    value={editForm.feeAmount}
+                    onChange={e => setEditForm({ ...editForm, feeAmount: Number(e.target.value) || 0 })}
+                    style={{ width: "100%", padding: "5px 6px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div>
+                <label style={{ fontSize: "0.76rem", color: "#475569", display: "block" }}>
+                  حساب مالی مرتبط:
+                </label>
+                <select
+                  value={editForm.accountId}
+                  onChange={e => setEditForm({ ...editForm, accountId: e.target.value })}
+                  style={{ width: "100%", padding: "5px 6px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                >
+                  <option value="">-- بدون حساب --</option>
+                  {state.accounts.map(a => (
+                    <option key={a.id} value={a.id}>{a.name} ({a.type})</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <div>
+              <label style={{ fontSize: "0.76rem", color: "#475569", display: "block" }}>
+                یادداشت:
+              </label>
+              <input
+                type="text"
+                value={editForm.note}
+                onChange={e => setEditForm({ ...editForm, note: e.target.value })}
+                style={{ width: "100%", padding: "5px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+              />
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button
+                type="button"
+                className="button button-ghost button-small"
+                onClick={() => setIsEditing(false)}
+              >
+                انصراف
+              </button>
+              <button type="submit" className="button button-primary button-small">
+                ذخیره تغییرات سند
+              </button>
+            </div>
+          </form>
+        )}
 
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {/* Main Strip */}
@@ -2671,10 +3677,11 @@ export function TransactionDetailDialog({
                 >
                   شرح و مستندات:
                 </span>
-                <strong>{transaction.note}</strong>
+                <strong>{currentTx.note || transaction.note}</strong>
               </div>
             )}
           </div>
+        </div>
         </div>
       </div>
 
@@ -2683,6 +3690,7 @@ export function TransactionDetailDialog({
           person={inspectingPerson}
           state={state}
           onClose={() => setInspectingPerson(null)}
+          onSave={onSave}
         />
       )}
 
@@ -2691,6 +3699,7 @@ export function TransactionDetailDialog({
           account={inspectingAccount}
           state={state}
           onClose={() => setInspectingAccount(null)}
+          onSave={onSave}
         />
       )}
 
@@ -2699,6 +3708,7 @@ export function TransactionDetailDialog({
           check={inspectingCheck}
           state={state}
           onClose={() => setInspectingCheck(null)}
+          onSave={onSave}
         />
       )}
     </div>
@@ -2713,6 +3723,7 @@ export function EventDetailDialog({
   account,
   state,
   onClose,
+  onSave,
   onOpenParty,
   onOpenCounterAccount,
 }: {
@@ -2720,32 +3731,190 @@ export function EventDetailDialog({
   account: AppState["accounts"][number];
   state: AppState;
   onClose: () => void;
+  onSave?: (next: AppState, message: string) => void;
   onOpenParty?: (p: Person) => void;
   onOpenCounterAccount?: (a: AppState["accounts"][number]) => void;
 }) {
-  const party = event.partyId
-    ? state.people.find(p => p.id === event.partyId)
+  const [currentEvent, setCurrentEvent] = useState(event);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editForm, setEditForm] = useState({
+    amount: currentEvent.inflow || currentEvent.outflow || currentEvent.amount || 0,
+    note: currentEvent.note || "",
+    date: currentEvent.date || todayJalali(),
+  });
+
+  const party = currentEvent.partyId
+    ? state.people.find(p => p.id === currentEvent.partyId)
     : undefined;
-  const counterAccount = event.counterAccountId
-    ? state.accounts.find(a => a.id === event.counterAccountId)
+  const counterAccount = currentEvent.counterAccountId
+    ? state.accounts.find(a => a.id === currentEvent.counterAccountId)
     : undefined;
+
+  function handleDeleteEvent() {
+    if (
+      !window.confirm(
+        "آیا از حذف این رویداد نقدینگی مطمئنید؟ مانده حساب به مقدار اولیه برگشت داده می‌شود."
+      )
+    )
+      return;
+    const res = deleteCashEventAndRevert(state, currentEvent.sourceId || currentEvent.id);
+    onSave?.(res.nextState, res.message);
+    onClose();
+  }
+
+  function handleSaveEvent(e: React.FormEvent) {
+    e.preventDefault();
+    const res = editCashEventAndRevert(state, currentEvent.sourceId || currentEvent.id, {
+      amount: Number(editForm.amount) || 0,
+      note: editForm.note,
+      date: editForm.date,
+    });
+    const updated = res.nextState.cashEvents.find(
+      ev => ev.id === (currentEvent.sourceId || currentEvent.id)
+    );
+    if (updated) setCurrentEvent(updated);
+    setIsEditing(false);
+    onSave?.(res.nextState, res.message);
+  }
+
+  const eventAmount =
+    currentEvent.inflow !== undefined
+      ? currentEvent.inflow > 0
+        ? currentEvent.inflow
+        : currentEvent.outflow
+      : currentEvent.amount || 0;
 
   return (
     <div className="dialog-backdrop" onMouseDown={onClose}>
       <div
         className="dialog"
         onMouseDown={e => e.stopPropagation()}
-        style={{ width: "min(540px, 95vw)" }}
+        style={{ width: "min(560px, 95vw)" }}
       >
         <div className="dialog-header">
           <div>
             <span className="section-kicker">دفتر معین نقدینگی</span>
-            <h3>جزئیات رویداد: {event.type}</h3>
+            <h3>جزئیات رویداد: {currentEvent.type || "اصلاح نقدینگی"}</h3>
           </div>
-          <button className="icon-button" onClick={onClose} title="بستن">
-            <X size={18} />
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <PrintActionMenu
+              title={`رویداد نقدینگی: ${currentEvent.type || "اصلاح"} (${account.name})`}
+              filename={`رویداد-${account.name}`}
+              getTargetElement={() =>
+                document.getElementById(`event-detail-print-${currentEvent.id}`)
+              }
+              onDirectPrint={() => window.print()}
+              buttonLabel="چاپ و دانلود"
+              style={{ padding: "5px 10px", fontSize: "0.8rem" }}
+            />
+            {onSave && (
+              <>
+                <button
+                  className="button button-ghost button-small"
+                  onClick={() => {
+                    setIsEditing(!isEditing);
+                    setEditForm({
+                      amount: eventAmount,
+                      note: currentEvent.note || "",
+                      date: currentEvent.date || todayJalali(),
+                    });
+                  }}
+                  title="ویرایش این سند"
+                  style={{ color: "#0369a1" }}
+                >
+                  <Pencil size={14} />
+                  {isEditing ? "لغو ویرایش" : "ویرایش"}
+                </button>
+                <button
+                  className="button button-ghost button-small"
+                  onClick={handleDeleteEvent}
+                  title="حذف سند و بازگشت مانده حساب"
+                  style={{ color: "#dc2626" }}
+                >
+                  <Trash2 size={14} />
+                  حذف
+                </button>
+              </>
+            )}
+            <button className="icon-button" onClick={onClose} title="بستن">
+              <X size={18} />
+            </button>
+          </div>
         </div>
+
+        {/* Printable Content Wrapper */}
+        <div id={`event-detail-print-${currentEvent.id}`} style={{ width: "100%", background: "#ffffff" }}>
+
+        {isEditing && (
+          <form
+            onSubmit={handleSaveEvent}
+            style={{
+              background: "#f0f9ff",
+              border: "1px solid #bae6fd",
+              borderRadius: 12,
+              padding: 12,
+              marginBottom: 14,
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+            }}
+          >
+            <div style={{ fontWeight: 700, color: "#0369a1", fontSize: "0.88rem" }}>
+              ویرایش سند نقدینگی و مانده حساب
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <div>
+                <label style={{ fontSize: "0.76rem", color: "#475569", display: "block" }}>
+                  مبلغ:
+                </label>
+                <input
+                  type="number"
+                  value={editForm.amount}
+                  onChange={e =>
+                    setEditForm({ ...editForm, amount: Number(e.target.value) || 0 })
+                  }
+                  required
+                  style={{ width: "100%", padding: "5px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: "0.76rem", color: "#475569", display: "block" }}>
+                  تاریخ:
+                </label>
+                <input
+                  type="text"
+                  value={editForm.date}
+                  onChange={e => setEditForm({ ...editForm, date: e.target.value })}
+                  required
+                  style={{ width: "100%", padding: "5px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                />
+              </div>
+            </div>
+            <div>
+              <label style={{ fontSize: "0.76rem", color: "#475569", display: "block" }}>
+                یادداشت:
+              </label>
+              <input
+                type="text"
+                value={editForm.note}
+                onChange={e => setEditForm({ ...editForm, note: e.target.value })}
+                style={{ width: "100%", padding: "5px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+              />
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button
+                type="button"
+                className="button button-ghost button-small"
+                onClick={() => setIsEditing(false)}
+              >
+                انصراف
+              </button>
+              <button type="submit" className="button button-primary button-small">
+                ذخیره تغییرات رویداد
+              </button>
+            </div>
+          </form>
+        )}
 
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {/* Main Strip */}
@@ -2864,7 +4033,7 @@ export function EventDetailDialog({
               </div>
             )}
 
-            {event.note && (
+            {currentEvent.note && (
               <div
                 style={{
                   padding: "10px 12px",
@@ -2883,10 +4052,11 @@ export function EventDetailDialog({
                 >
                   شرح و توضیحات:
                 </span>
-                <strong>{event.note}</strong>
+                <strong>{currentEvent.note}</strong>
               </div>
             )}
           </div>
+        </div>
         </div>
       </div>
     </div>
