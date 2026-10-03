@@ -1874,6 +1874,7 @@ export function reconcileLedgerEvents(previous: AppState, next: AppState): AppSt
         amount: -event.amount, currency: next.settings.currency, sourceType: "transaction-reversal",
         sourceId: event.sourceId || transaction.id, reversalOf: event.id, note: `معکوس‌سازی رویداد نقدی برای اصلاح ${transaction.id}`,
       });
+      specializedCashAccounts.add(event.accountId);
     }
   }
   for (const transaction of changedTransactions) {
