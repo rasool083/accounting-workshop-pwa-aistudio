@@ -19,8 +19,9 @@ function currentJalaliDateTime() {
 }
 
 /**
- * Safely renders an HTML element into a canvas with automatic scale optimization
- * and fallback between html2canvas-pro and standard html2canvas.
+ * Safely renders an HTML element into a canvas with automatic scale optimization,
+ * preservation of customer information and full accordion detail rows,
+ * and seamless fallback between html2canvas-pro and standard html2canvas.
  */
 async function renderElementToCanvas(
   element: HTMLElement,
@@ -38,14 +39,56 @@ async function renderElementToCanvas(
   if (targetScale < 1) targetScale = 1;
 
   const onCloneHandler = (clonedDoc: Document, clonedElement: HTMLElement) => {
-    // 1. Hide interactive action buttons, forms, and print-excluded elements
+    // 1. Preserve customer names, check numbers, etc. that were wrapped in text buttons or toggles
+    clonedElement
+      .querySelectorAll(
+        "button.text-button, button.allocation-toggle, .text-button, .allocation-toggle"
+      )
+      .forEach(btn => {
+        const span = clonedDoc.createElement("span");
+        span.innerHTML = btn.innerHTML;
+        span.style.cssText = `
+          display: inline-block;
+          font-weight: 700;
+          color: #0f172a;
+          font-size: inherit;
+          text-decoration: none;
+        `;
+        // Remove interactive icons like chevron-down
+        span.querySelectorAll("svg").forEach(svg => svg.remove());
+        btn.parentNode?.replaceChild(span, btn);
+      });
+
+    // 2. Replace <select> dropdowns with clean, legible badges showing the selected text
+    clonedElement.querySelectorAll("select").forEach(sel => {
+      const selectedOption = sel.options[sel.selectedIndex];
+      const selectedText = selectedOption ? selectedOption.text : sel.value;
+      const span = clonedDoc.createElement("span");
+      span.textContent = selectedText || "—";
+      span.style.cssText = `
+        display: inline-block;
+        padding: 3px 8px;
+        border-radius: 6px;
+        font-size: 11px;
+        font-weight: 700;
+        background: #f1f5f9;
+        color: #1e293b;
+        border: 1px solid #cbd5e1;
+        white-space: nowrap;
+      `;
+      sel.parentNode?.replaceChild(span, sel);
+    });
+
+    // 3. Hide interactive action buttons, private columns, and form submission bars
     const hideSelectors = [
-      "button",
-      ".button",
+      ".row-action",
       ".icon-button",
+      ".panel-heading-actions",
       ".form-actions",
       ".no-print",
+      ".print-private",
       ".table-actions",
+      "button[type='submit']",
       "input[type='button']",
       "input[type='submit']",
       ".filter-grid",
@@ -55,7 +98,63 @@ async function renderElementToCanvas(
       (node as HTMLElement).style.setProperty("display", "none", "important");
     });
 
-    // 2. Expand scroll and overflow wrappers
+    // 4. Ensure every accordion row and customer detail box is 100% visible and expanded
+    clonedElement.querySelectorAll(".allocation-detail-row").forEach(node => {
+      const el = node as HTMLElement;
+      el.style.setProperty("display", "table-row", "important");
+      el.style.setProperty("visibility", "visible", "important");
+    });
+
+    clonedElement
+      .querySelectorAll(".check-accordion-box, .invoice-accordion-box")
+      .forEach(node => {
+        const el = node as HTMLElement;
+        el.style.setProperty("display", "block", "important");
+        el.style.setProperty("visibility", "visible", "important");
+        el.style.setProperty("max-height", "none", "important");
+        el.style.setProperty("height", "auto", "important");
+        el.style.setProperty("overflow", "visible", "important");
+        el.style.setProperty("opacity", "1", "important");
+        el.style.setProperty("background", "#f8fafc", "important");
+        el.style.setProperty("border", "1px solid #cbd5e1", "important");
+        el.style.setProperty("border-radius", "8px", "important");
+        el.style.setProperty("padding", "10px 14px", "important");
+        el.style.setProperty("margin", "6px 0", "important");
+      });
+
+    clonedElement.querySelectorAll(".invoice-customer-info-strip").forEach(node => {
+      const el = node as HTMLElement;
+      el.style.setProperty("display", "flex", "important");
+      el.style.setProperty("flex-wrap", "wrap", "important");
+      el.style.setProperty("align-items", "center", "important");
+      el.style.setProperty("gap", "10px 18px", "important");
+      el.style.setProperty("background", "#ffffff", "important");
+      el.style.setProperty("padding", "10px 14px", "important");
+      el.style.setProperty("border-radius", "6px", "important");
+      el.style.setProperty("border", "1px solid #e2e8f0", "important");
+      el.style.setProperty("margin-bottom", "8px", "important");
+      el.style.setProperty("font-size", "11.5px", "important");
+      el.style.setProperty("color", "#0f172a", "important");
+      el.style.setProperty("line-height", "1.6", "important");
+    });
+
+    clonedElement.querySelectorAll(".roll-subtable-wrap").forEach(node => {
+      const el = node as HTMLElement;
+      el.style.setProperty("display", "block", "important");
+      el.style.setProperty("width", "100%", "important");
+      el.style.setProperty("overflow", "visible", "important");
+      el.style.setProperty("margin-top", "6px", "important");
+    });
+
+    clonedElement.querySelectorAll(".roll-subtable").forEach(node => {
+      const el = node as HTMLElement;
+      el.style.setProperty("display", "table", "important");
+      el.style.setProperty("width", "100%", "important");
+      el.style.setProperty("border-collapse", "collapse", "important");
+      el.style.setProperty("font-size", "11px", "important");
+    });
+
+    // 5. Expand scroll and overflow wrappers
     clonedElement
       .querySelectorAll(".table-wrap, .dialog-body, .scroll-area, [class*='scroll']")
       .forEach(node => {
@@ -66,18 +165,24 @@ async function renderElementToCanvas(
         el.style.width = "100%";
       });
 
-    // 3. Ensure the cloned container itself is fully open
+    // 6. Ensure the cloned container itself is fully open and styled
     clonedElement.style.maxHeight = "none";
     clonedElement.style.height = "auto";
     clonedElement.style.overflow = "visible";
     clonedElement.style.width = "100%";
-    clonedElement.style.minWidth = "1100px";
+    clonedElement.style.minWidth = "1150px";
     clonedElement.style.backgroundColor = "#ffffff";
     clonedElement.style.padding = "24px";
     clonedElement.style.direction = "rtl";
     clonedElement.style.fontFamily = "Vazirmatn, system-ui, -apple-system, sans-serif";
 
-    // 4. Prepend official Persian banner
+    // 7. Ensure table font readability
+    clonedElement.querySelectorAll("table, th, td").forEach(node => {
+      const el = node as HTMLElement;
+      el.style.fontSize = "11px";
+    });
+
+    // 8. Prepend official Persian banner
     const banner = clonedDoc.createElement("div");
     banner.style.cssText = `
       display: flex;
@@ -101,7 +206,7 @@ async function renderElementToCanvas(
     `;
     clonedElement.insertBefore(banner, clonedElement.firstChild);
 
-    // 5. Append official footer
+    // 9. Append official footer
     const footer = clonedDoc.createElement("div");
     footer.style.cssText = `
       display: flex;
@@ -116,7 +221,7 @@ async function renderElementToCanvas(
     `;
     footer.innerHTML = `
       <div>تهیه شده در سیستم مدیریت مالی و حسابداری کارگاه · سند رسمی مالی و تجاری</div>
-      <div>صفحه پیوسته دیجیتال با قابلیت زوم و اسکرول روان در تلفن همراه و تبلت</div>
+      <div>شامل تمام مشخصات طرف حساب، اطلاعات چک‌ها، و جزئیات تخصیص فاکتورها</div>
     `;
     clonedElement.appendChild(footer);
   };

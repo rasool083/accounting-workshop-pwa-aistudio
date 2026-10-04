@@ -17,6 +17,8 @@ export interface PrintActionMenuProps {
   title: string;
   filename: string;
   getTargetElement: () => HTMLElement | null;
+  onBeforeExport?: () => void | Promise<void>;
+  onAfterExport?: () => void;
   onDirectPrint?: () => void;
   buttonLabel?: string;
   className?: string;
@@ -27,6 +29,8 @@ export function PrintActionMenu({
   title,
   filename,
   getTargetElement,
+  onBeforeExport,
+  onAfterExport,
   onDirectPrint,
   buttonLabel = "چاپ و خروجی PDF",
   className = "button button-secondary",
@@ -37,13 +41,17 @@ export function PrintActionMenu({
   const [successMessage, setSuccessMessage] = useState("");
 
   async function handleContinuousRollDownload() {
-    const el = getTargetElement();
-    if (!el) {
-      alert("عنصر چاپی یافت نشد");
-      return;
-    }
     try {
       setIsExporting(true);
+      if (onBeforeExport) {
+        await onBeforeExport();
+        await new Promise(r => setTimeout(r, 250));
+      }
+      const el = getTargetElement();
+      if (!el) {
+        alert("عنصر چاپی یافت نشد");
+        return;
+      }
       await exportToContinuousRollPDF(el, {
         filename: `${filename}-طومار-لنداسکیپ`,
         title,
@@ -58,18 +66,23 @@ export function PrintActionMenu({
       console.error(err);
       alert("خطا در ایجاد PDF طومار: " + (err instanceof Error ? err.message : String(err)));
     } finally {
+      if (onAfterExport) onAfterExport();
       setIsExporting(false);
     }
   }
 
   async function handleA4LandscapeDownload() {
-    const el = getTargetElement();
-    if (!el) {
-      alert("عنصر چاپی یافت نشد");
-      return;
-    }
     try {
       setIsExporting(true);
+      if (onBeforeExport) {
+        await onBeforeExport();
+        await new Promise(r => setTimeout(r, 250));
+      }
+      const el = getTargetElement();
+      if (!el) {
+        alert("عنصر چاپی یافت نشد");
+        return;
+      }
       await exportToMultiPageLandscapePDF(el, {
         filename: `${filename}-چندصفحه-A4`,
         title,
@@ -84,6 +97,7 @@ export function PrintActionMenu({
       console.error(err);
       alert("خطا در ایجاد PDF: " + (err instanceof Error ? err.message : String(err)));
     } finally {
+      if (onAfterExport) onAfterExport();
       setIsExporting(false);
     }
   }

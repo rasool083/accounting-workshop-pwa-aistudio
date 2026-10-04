@@ -2261,6 +2261,13 @@ function Invoices({
             document.getElementById("invoices-table-panel") ||
             (document.querySelector(".panel.table-panel") as HTMLElement) || document.body
           }
+          onBeforeExport={async () => {
+            setPrintingInvoices(true);
+            setExpandedInvoiceIds(new Set(sortedInvoices.map(inv => inv.id)));
+          }}
+          onAfterExport={() => {
+            setPrintingInvoices(false);
+          }}
           onDirectPrint={() => {
             setPrintingInvoices(true);
             setExpandedInvoiceIds(new Set(sortedInvoices.map(inv => inv.id)));
@@ -2322,7 +2329,7 @@ function Invoices({
             <tbody>
               {sortedInvoices.length ? (
                 displayInvoices.map(invoice => {
-                    const expanded = expandedInvoiceIds.has(invoice.id);
+                    const expanded = printingInvoices || expandedInvoiceIds.has(invoice.id);
                     const allocations = invoiceAllocations.filter(
                       item => item.invoiceId === invoice.id
                     );
@@ -7988,6 +7995,13 @@ function Checks({
             document.getElementById("checks-table-panel") ||
             (document.querySelector(".panel.table-panel") as HTMLElement) || document.body
           }
+          onBeforeExport={async () => {
+            setPrintingChecks(true);
+            setExpandedCheckIds(new Set(visibleChecks.map(check => check.id)));
+          }}
+          onAfterExport={() => {
+            setPrintingChecks(false);
+          }}
           onDirectPrint={() => {
             setPrintingChecks(true);
             setExpandedCheckIds(new Set(visibleChecks.map(check => check.id)));
@@ -8042,7 +8056,7 @@ function Checks({
                   const checkAllocations = allocationDetails.filter(
                     item => item.checkId === check.id
                   );
-                  const expanded = expandedCheckIds.has(check.id);
+                  const expanded = printingChecks || expandedCheckIds.has(check.id);
                   return (
                     <Fragment key={check.id}>
                       <tr
