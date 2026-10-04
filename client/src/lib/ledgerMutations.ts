@@ -106,10 +106,24 @@ export function deleteTransactionAndRevert(
   const nextAccounts = applyAccountEffect(state.accounts, tx, -1);
   const nextProducts = applyProductEffect(state.products, tx, -1);
 
+  // If this transaction was linked to any payroll record, revert it to payable cleanly
+  const nextPayrollRecords = (state.payrollRecords || []).map(pr => {
+    if (pr.transactionId === transactionId) {
+      return {
+        ...pr,
+        status: "پرداختنی" as const,
+        transactionId: undefined,
+        paidAt: undefined,
+      };
+    }
+    return pr;
+  });
+
   const nextState: AppState = {
     ...state,
     accounts: nextAccounts,
     products: nextProducts,
+    payrollRecords: nextPayrollRecords,
     transactions: state.transactions.filter(t => t.id !== transactionId),
   };
 
@@ -141,10 +155,26 @@ export function editTransactionAndRevert(
   const nextAccounts = applyAccountEffect(accountsWithoutOld, newTx, 1);
   const nextProducts = applyProductEffect(productsWithoutOld, newTx, 1);
 
+  // 4. Update linked payroll record if exists
+  const nextPayrollRecords = (state.payrollRecords || []).map(pr => {
+    if (pr.transactionId === transactionId) {
+      return {
+        ...pr,
+        amount: newTx.amount,
+        feeAmount: newTx.feeAmount || 0,
+        date: newTx.date,
+        paidAt: newTx.date,
+        accountId: newTx.accountId,
+      };
+    }
+    return pr;
+  });
+
   const nextState: AppState = {
     ...state,
     accounts: nextAccounts,
     products: nextProducts,
+    payrollRecords: nextPayrollRecords,
     transactions: state.transactions.map(t =>
       t.id === transactionId ? newTx : t
     ),
@@ -626,10 +656,23 @@ export function deleteCashEventAndRevert(
   state: AppState,
   eventId: string
 ): { nextState: AppState; message: string } {
-  const event = state.cashEvents.find(e => e.id === eventId);
-  if (!event) return { nextState: state, message: "رویداد نقدینگی یافت نشد" };
+  const cleanId = eventId.replace(/^cash-event-/, "");
+  const event = state.cashEvents.find(e => e.id === cleanId || e.id === eventId);
+  if (!event) {
+    // If not found in cashEvents, check if it was a transaction id
+    const txId = eventId.replace(/^tx-/, "").replace(/-(in|out)$/, "");
+    if (state.transactions.some(t => t.id === txId)) {
+      return deleteTransactionAndRevert(state, txId);
+    }
+    return { nextState: state, message: "رویداد نقدینگی یافت نشد" };
+  }
 
-  // Revert cash balance from the account
+  // If this cash event is linked to a transaction, delegate directly to deleteTransactionAndRevert
+  if (event.sourceId && state.transactions.some(t => t.id === event.sourceId)) {
+    return deleteTransactionAndRevert(state, event.sourceId);
+  }
+
+  // Standalone cash event (e.g. manual adjustment, opening balance, or unlinked cash event)
   const nextAccounts = state.accounts.map(acc => {
     if (acc.id === event.accountId) {
       return { ...acc, balance: acc.balance - event.amount };
@@ -640,12 +683,12 @@ export function deleteCashEventAndRevert(
   const nextState: AppState = {
     ...state,
     accounts: nextAccounts,
-    cashEvents: state.cashEvents.filter(e => e.id !== eventId),
+    cashEvents: state.cashEvents.filter(e => e.id !== event.id),
   };
 
   return {
     nextState,
-    message: `سند اصلاح مانده نقدینگی حذف شد و مانده حساب به مقدار اولیه برگشت داده شد.`,
+    message: `سند گردش نقدینگی حذف شد و مانده حساب به مقدار اولیه برگشت داده شد.`,
   };
 }
 
@@ -654,7 +697,8 @@ export function editCashEventAndRevert(
   eventId: string,
   updatedFields: { amount?: number; note?: string; date?: string }
 ): { nextState: AppState; message: string } {
-  const oldEvent = state.cashEvents.find(e => e.id === eventId);
+  const cleanId = eventId.replace(/^cash-event-/, "");
+  const oldEvent = state.cashEvents.find(e => e.id === cleanId || e.id === eventId);
   if (!oldEvent) return { nextState: state, message: "رویداد نقدینگی یافت نشد" };
 
   const newAmount =
@@ -668,6 +712,20 @@ export function editCashEventAndRevert(
     return acc;
   });
 
+  let nextTransactions = state.transactions;
+  if (oldEvent.sourceId) {
+    nextTransactions = state.transactions.map(t =>
+      t.id === oldEvent.sourceId
+        ? {
+            ...t,
+            amount: Math.abs(newAmount),
+            date: updatedFields.date || t.date,
+            note: updatedFields.note !== undefined ? updatedFields.note : t.note,
+          }
+        : t
+    );
+  }
+
   const newEvent: CashEvent = {
     ...oldEvent,
     amount: newAmount,
@@ -678,7 +736,8 @@ export function editCashEventAndRevert(
   const nextState: AppState = {
     ...state,
     accounts: nextAccounts,
-    cashEvents: state.cashEvents.map(e => (e.id === eventId ? newEvent : e)),
+    transactions: nextTransactions,
+    cashEvents: state.cashEvents.map(e => (e.id === oldEvent.id ? newEvent : e)),
   };
 
   return {

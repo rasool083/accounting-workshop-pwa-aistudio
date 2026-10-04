@@ -128,7 +128,7 @@ export function AccountLedgerDialog({
       date: string;
       rawDate: string;
       type: string;
-      typeKind: "inflow" | "outflow" | "transfer" | "adjustment";
+      typeKind: "inflow" | "outflow" | "transfer" | "adjustment" | "reversal";
       partyId?: string;
       counterAccountId?: string;
       sourceId?: string;
@@ -173,6 +173,9 @@ export function AccountLedgerDialog({
         } else if (e.kind === "opening_balance") {
           typeKind = "adjustment";
           typeLabel = "موجودی افتتاحیه";
+        } else if (e.kind === "reversal") {
+          typeKind = isPositive ? "inflow" : "outflow";
+          typeLabel = "ابطال و برگشت سند";
         }
 
         // Try to resolve party from linked transaction or check
@@ -483,6 +486,105 @@ export function AccountLedgerDialog({
     setSelectedEvent(row);
   }
 
+  function handleRowEdit(row: (typeof filteredEntries)[number], e: React.MouseEvent) {
+    e.stopPropagation();
+    handleRowClick(row);
+  }
+
+  function handleRowDelete(row: (typeof filteredEntries)[number], e: React.MouseEvent) {
+    e.stopPropagation();
+    if (!onSave) return;
+
+    const rowAmount = row.inflow > 0 ? row.inflow : row.outflow;
+    const amountFormatted = formatMoney(rowAmount, state.settings.currency);
+
+    // 1. Transaction row
+    let targetTxId: string | undefined;
+    if (row.id.startsWith("tx-")) {
+      targetTxId = row.id.replace(/^tx-/, "").replace(/-(in|out)$/, "");
+    } else if (row.sourceId && state.transactions.some(t => t.id === row.sourceId)) {
+      targetTxId = row.sourceId;
+    }
+
+    if (targetTxId) {
+      const tx = state.transactions.find(t => t.id === targetTxId);
+      if (
+        !window.confirm(
+          `آیا از حذف این سند مالی («${tx?.type || row.type}» به مبلغ ${amountFormatted}) مطمئنید؟\nاثر مالی آن بر موجودی حساب و دفاتر معکوس شده و رکورد برگشت سند ثبت خواهد شد.`
+        )
+      ) {
+        return;
+      }
+      const res = deleteTransactionAndRevert(state, targetTxId);
+      onSave(res.nextState, res.message);
+      return;
+    }
+
+    // 2. Check row
+    let targetCheckId: string | undefined;
+    if (row.id.startsWith("check-")) {
+      targetCheckId = row.id.replace(/^check-/, "");
+    } else if (row.sourceType === "check" && row.sourceId) {
+      targetCheckId = row.sourceId;
+    }
+    if (targetCheckId) {
+      if (
+        !window.confirm(
+          `آیا از حذف/برگشت چک دریافتی به مبلغ ${amountFormatted} مطمئنید؟`
+        )
+      ) {
+        return;
+      }
+      const res = deleteCheckAndRevert(state, targetCheckId);
+      onSave(res.nextState, res.message);
+      return;
+    }
+
+    // 3. Issued check row
+    let targetIssuedCheckId: string | undefined;
+    if (row.id.startsWith("issued-check-")) {
+      targetIssuedCheckId = row.id.replace(/^issued-check-/, "");
+    }
+    if (targetIssuedCheckId) {
+      if (
+        !window.confirm(
+          `آیا از حذف/ابطال چک صادره به مبلغ ${amountFormatted} مطمئنید؟`
+        )
+      ) {
+        return;
+      }
+      const ic = state.issuedChecks.find(c => c.id === targetIssuedCheckId);
+      if (ic) {
+        const nextIssuedChecks = state.issuedChecks.filter(c => c.id !== targetIssuedCheckId);
+        let nextAccounts = state.accounts;
+        if (ic.status === "پرداخت شده" && ic.bankAccountId) {
+          nextAccounts = nextAccounts.map(acc =>
+            acc.id === ic.bankAccountId ? { ...acc, balance: acc.balance + ic.amount } : acc
+          );
+        }
+        onSave(
+          { ...state, accounts: nextAccounts, issuedChecks: nextIssuedChecks },
+          `چک صادره شماره ${ic.number} حذف شد و اثر حساب آن معکوس گردید.`
+        );
+      }
+      return;
+    }
+
+    // 4. Cash event or adjustment
+    const eventId = row.id.startsWith("cash-event-")
+      ? row.id.replace(/^cash-event-/, "")
+      : row.sourceId || row.id;
+    if (
+      !window.confirm(
+        `آیا از حذف این رویداد نقدینگی به مبلغ ${amountFormatted} مطمئنید؟ مانده حساب دقیقاً به مقدار اولیه بازگردانده خواهد شد.`
+      )
+    ) {
+      return;
+    }
+    const res = deleteCashEventAndRevert(state, eventId);
+    onSave(res.nextState, res.message);
+  }
+
   return (
     <div className="dialog-backdrop" onMouseDown={onClose}>
       <div
@@ -712,13 +814,14 @@ export function AccountLedgerDialog({
           <table>
             <thead>
               <tr>
-                <th style={{ width: "10%" }}>تاریخ</th>
-                <th style={{ width: "13%" }}>نوع گردش</th>
-                <th style={{ width: "18%" }}>طرف حساب / حساب مقابل</th>
-                <th style={{ width: "23%" }}>شرح و جزئیات</th>
-                <th style={{ width: "12%" }}>واریز / ورود (+)</th>
-                <th style={{ width: "12%" }}>برداشت / خروج (-)</th>
-                <th style={{ width: "12%" }}>مانده پس از رویداد</th>
+                <th style={{ width: "9%" }}>تاریخ</th>
+                <th style={{ width: "12%" }}>نوع گردش</th>
+                <th style={{ width: "16%" }}>طرف حساب / حساب مقابل</th>
+                <th style={{ width: "20%" }}>شرح و جزئیات</th>
+                <th style={{ width: "11%" }}>واریز / ورود (+)</th>
+                <th style={{ width: "11%" }}>برداشت / خروج (-)</th>
+                <th style={{ width: "11%" }}>مانده پس از رویداد</th>
+                <th style={{ width: "10%", textAlign: "center" }}>عملیات</th>
               </tr>
             </thead>
             <tbody>
@@ -836,11 +939,67 @@ export function AccountLedgerDialog({
                     >
                       {formatMoney(row.runningBalance, state.settings.currency)}
                     </td>
+                    <td
+                      style={{ textAlign: "center", whiteSpace: "nowrap" }}
+                      onClick={e => e.stopPropagation()}
+                    >
+                      {row.id.startsWith("opening-") ? (
+                        <span className="soft-tag" style={{ fontSize: "0.72rem" }}>
+                          پایه دوره
+                        </span>
+                      ) : row.typeKind === "reversal" ||
+                        row.type.includes("ابطال") ||
+                        row.type.includes("معکوس") ? (
+                        <span className="badge amber" style={{ fontSize: "0.72rem" }}>
+                          سند باطل‌شده
+                        </span>
+                      ) : (
+                        <div
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4,
+                            justifyContent: "center",
+                          }}
+                        >
+                          <button
+                            type="button"
+                            className="button button-ghost button-small"
+                            onClick={e => handleRowEdit(row, e)}
+                            title="ویرایش این سند"
+                            style={{
+                              padding: "2px 6px",
+                              fontSize: "0.72rem",
+                              color: "#0284c7",
+                            }}
+                          >
+                            <Pencil size={12} />
+                            ویرایش
+                          </button>
+                          {onSave && (
+                            <button
+                              type="button"
+                              className="button button-ghost button-small"
+                              onClick={e => handleRowDelete(row, e)}
+                              title="حذف سند و بازگشت اثر به حساب"
+                              style={{
+                                padding: "2px 6px",
+                                fontSize: "0.72rem",
+                                color: "#dc2626",
+                              }}
+                            >
+                              <Trash2 size={12} />
+                              حذف
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={7} style={{ textAlign: "center", padding: "24px 0" }}>
+                  <td colSpan={8} style={{ textAlign: "center", padding: "24px 0" }}>
                     <span className="muted-cell">
                       هیچ تراکنش یا انتقالی با شرایط انتخاب‌شده یافت نشد.
                     </span>

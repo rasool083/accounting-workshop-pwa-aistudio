@@ -3960,6 +3960,18 @@ function PayrollPage({
     status: "پرداخت‌شده" as "پرداخت‌شده" | "پرداختنی",
     note: "",
   });
+  const [editingRecord, setEditingRecord] = useState<AppState["payrollRecords"][number] | null>(null);
+  const [editForm, setEditForm] = useState({
+    employeeName: "",
+    personId: "",
+    amount: "",
+    feeAmount: "",
+    period: "",
+    date: "",
+    accountId: "",
+    status: "پرداخت‌شده" as "پرداخت‌شده" | "پرداختنی",
+    note: "",
+  });
   const [selectedPersonForLedger, setSelectedPersonForLedger] = useState<Person | null>(null);
   const [selectedAccountForLedger, setSelectedAccountForLedger] = useState<AppState["accounts"][number] | null>(null);
   const payrollPeople = state.people.filter(person =>
@@ -4039,9 +4051,7 @@ function PayrollPage({
         ...state,
         payrollRecords: [record, ...state.payrollRecords],
         transactions: transaction ? [transaction, ...state.transactions] : state.transactions,
-        accounts: transaction
-          ? state.accounts.map(item => item.id === account!.id ? { ...item, balance: item.balance - amount - Math.max(0, parseLocalizedNumber(form.feeAmount) || 0) } : item)
-          : state.accounts,
+        accounts: state.accounts,
       },
       form.status === "پرداخت‌شده" ? "پرداخت حقوق ثبت شد؛ حساب شخص تغییری نکرد" : "حقوق پرداختنی ثبت شد"
     );
@@ -4049,7 +4059,7 @@ function PayrollPage({
   }
 
   function payRecord(record: AppState["payrollRecords"][number]) {
-    const account = cashAccounts.find(item => item.id === form.accountId);
+    const account = cashAccounts.find(item => item.id === form.accountId) || cashAccounts[0];
     if (!account) {
       window.alert("برای پرداخت حقوق پرداختنی، بانک یا صندوق را انتخاب کنید.");
       return;
@@ -4073,7 +4083,7 @@ function PayrollPage({
         ...state,
         payrollRecords: state.payrollRecords.map(item => item.id === record.id ? { ...item, status: "پرداخت‌شده", accountId: account.id, transactionId, paidAt: todayJalali() } : item),
         transactions: [transaction, ...state.transactions],
-        accounts: state.accounts.map(item => item.id === account.id ? { ...item, balance: item.balance - record.amount - (Number(record.feeAmount) || 0) } : item),
+        accounts: state.accounts,
       },
       "حقوق پرداختنی پرداخت شد؛ حساب شخص تغییری نکرد"
     );
@@ -4089,12 +4099,141 @@ function PayrollPage({
         transactions: transaction
           ? state.transactions.map(item => item.id === transaction.id ? { ...item, status: "باطل" } : item)
           : state.transactions,
-        accounts: record.status === "پرداخت‌شده" && record.accountId
-          ? state.accounts.map(item => item.id === record.accountId ? { ...item, balance: item.balance + record.amount + (Number(record.feeAmount) || 0) } : item)
-          : state.accounts,
+        accounts: state.accounts,
       },
       "رکورد حقوق باطل و اثر حساب آن معکوس شد"
     );
+  }
+
+  function deleteRecord(record: AppState["payrollRecords"][number]) {
+    if (
+      !window.confirm(
+        `آیا از حذف کامل رکورد حقوق ${record.employeeName} مطمئنید؟\nدر صورت پرداخت بودن، اثر پرداختی و کارمزد به حساب بازگردانده می‌شود.`
+      )
+    )
+      return;
+    const transaction = record.transactionId
+      ? state.transactions.find(item => item.id === record.transactionId)
+      : undefined;
+    onSave(
+      {
+        ...state,
+        payrollRecords: state.payrollRecords.filter(item => item.id !== record.id),
+        transactions: transaction
+          ? state.transactions.map(item =>
+              item.id === transaction.id ? { ...item, status: "باطل" as const } : item
+            )
+          : state.transactions,
+        accounts: state.accounts,
+      },
+      `رکورد حقوق ${record.employeeName} حذف و اثر حساب آن معکوس شد`
+    );
+  }
+
+  function startEdit(record: AppState["payrollRecords"][number]) {
+    setEditingRecord(record);
+    setEditForm({
+      employeeName: record.employeeName,
+      personId: record.personId || "",
+      amount: String(record.amount),
+      feeAmount: String(record.feeAmount || ""),
+      period: record.period,
+      date: record.date,
+      accountId: record.accountId || "",
+      status: record.status as any,
+      note: record.note || "",
+    });
+  }
+
+  function savePayrollEdit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingRecord) return;
+    const amount = parseLocalizedNumber(editForm.amount);
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    const feeAmount = Math.max(0, parseLocalizedNumber(editForm.feeAmount) || 0);
+
+    const oldStatus = editingRecord.status;
+    const newStatus = editForm.status;
+
+    let nextTransactions = [...state.transactions];
+    let newTransactionId = editingRecord.transactionId;
+
+    if (newStatus === "پرداخت‌شده") {
+      const account = cashAccounts.find(a => a.id === editForm.accountId);
+      if (!account) {
+        window.alert("برای حقوق پرداخت‌شده، لطفاً حساب بانک یا صندوق را مشخص کنید.");
+        return;
+      }
+      if (oldStatus === "پرداخت‌شده" && editingRecord.transactionId) {
+        nextTransactions = nextTransactions.map(t =>
+          t.id === editingRecord.transactionId
+            ? {
+                ...t,
+                amount,
+                feeAmount,
+                date: editForm.date,
+                accountId: account.id,
+                referenceLabel: `حقوق ${editForm.employeeName}`,
+                note: `پرداخت حقوق ${editForm.employeeName} · دوره ${editForm.period}${editForm.note ? ` · ${editForm.note}` : ""}`,
+                status: "ثبت شده" as const,
+              }
+            : t
+        );
+      } else {
+        newTransactionId = createId("payroll-payment");
+        nextTransactions = [
+          {
+            id: newTransactionId,
+            type: "پرداخت حقوق" as const,
+            date: editForm.date,
+            accountId: account.id,
+            referenceType: "هزینه" as const,
+            referenceId: editingRecord.id,
+            referenceLabel: `حقوق ${editForm.employeeName}`,
+            amount,
+            feeAmount,
+            status: "ثبت شده" as const,
+            note: `پرداخت حقوق ${editForm.employeeName} · دوره ${editForm.period}${editForm.note ? ` · ${editForm.note}` : ""}`,
+          },
+          ...nextTransactions,
+        ];
+      }
+    } else if (newStatus === "پرداختنی") {
+      if (oldStatus === "پرداخت‌شده" && editingRecord.transactionId) {
+        nextTransactions = nextTransactions.map(t =>
+          t.id === editingRecord.transactionId ? { ...t, status: "باطل" as const } : t
+        );
+        newTransactionId = undefined;
+      }
+    }
+
+    const updatedRecord: AppState["payrollRecords"][number] = {
+      ...editingRecord,
+      employeeName: editForm.employeeName.trim(),
+      personId: editForm.personId || undefined,
+      amount,
+      feeAmount: newStatus === "پرداخت‌شده" ? feeAmount : 0,
+      period: editForm.period,
+      date: editForm.date,
+      status: newStatus,
+      accountId: newStatus === "پرداخت‌شده" ? editForm.accountId : undefined,
+      transactionId: newTransactionId,
+      paidAt: newStatus === "پرداخت‌شده" ? editForm.date : undefined,
+      note: editForm.note.trim(),
+    };
+
+    onSave(
+      {
+        ...state,
+        payrollRecords: state.payrollRecords.map(r =>
+          r.id === editingRecord.id ? updatedRecord : r
+        ),
+        transactions: nextTransactions,
+        accounts: state.accounts,
+      },
+      `رکورد حقوق ${updatedRecord.employeeName} ویرایش شد`
+    );
+    setEditingRecord(null);
   }
 
   return (
@@ -4119,7 +4258,7 @@ function PayrollPage({
         <div className="full-field form-actions"><button className="button button-primary" type="submit"><WalletCards size={16} /> ثبت حقوق</button></div>
       </form>
       <div className="panel table-panel"><div className="panel-heading"><div><span className="section-kicker">گزارش حقوق</span><h3>خلاصهٔ دوره‌ای</h3></div><span className="soft-tag">رکورد باطل‌شده محاسبه نمی‌شود</span></div><div className="table-wrap"><table><thead><tr><th>دوره</th><th>تعداد</th><th>پرداخت‌شده</th><th>پرداختنی</th><th>جمع تعهد دوره</th></tr></thead><tbody>{summaryRows.length ? summaryRows.map(([period, row]) => <tr key={period}><td><strong>{period}</strong></td><td>{row.count}</td><td>{formatMoney(row.paid, state.settings.currency)}</td><td>{formatMoney(row.payable, state.settings.currency)}</td><td>{formatMoney(row.paid + row.payable, state.settings.currency)}</td></tr>) : <tr><td colSpan={5}>هنوز رکورد فعال حقوقی ثبت نشده است.</td></tr>}</tbody></table></div></div>
-      <div className="panel table-panel"><div className="panel-heading"><div><span className="section-kicker">دفتر حقوق</span><h3>سوابق پرداخت و حقوق پرداختنی</h3></div><span className="soft-tag">حساب شخص درگیر نمی‌شود</span></div><div className="filter-grid"><label>شخص<select value={filters.personId} onChange={event => setFilters({ ...filters, personId: event.target.value })}><option value="">همهٔ اشخاص</option>{payrollPeople.map(person => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label><label>نقش<select value={filters.role} onChange={event => setFilters({ ...filters, role: event.target.value })}><option value="">همهٔ نقش‌ها</option><option value="کارگر">کارگر</option><option value="کارمند">کارمند</option><option value="شریک">شریک</option></select></label><label>وضعیت<select value={filters.status} onChange={event => setFilters({ ...filters, status: event.target.value })}><option value="همه">همهٔ وضعیت‌ها</option><option value="پرداخت‌شده">پرداخت‌شده</option><option value="پرداختنی">پرداختنی</option></select></label><label>دوره<input value={filters.period} onChange={event => setFilters({ ...filters, period: event.target.value })} placeholder="مثلاً ۱۴۰۵/۰۶" /></label></div><div className="table-wrap"><table><thead><tr><th>دوره</th><th>دریافت‌کننده</th><th>مبلغ</th><th>وضعیت</th><th>حساب پرداخت</th><th>عملیات</th></tr></thead><tbody>{filteredRecords.length ? filteredRecords.map(record => { const linkedPerson = record.personId ? state.people.find(item => item.id === record.personId) : undefined; const linkedAccount = record.accountId ? state.accounts.find(item => item.id === record.accountId) : undefined; return <tr key={record.id}><td>{record.period}</td><td>{linkedPerson ? <button type="button" className="text-button" onClick={() => setSelectedPersonForLedger(linkedPerson)} title="مشاهده پرونده مالی شخص"><strong>{linkedPerson.name}</strong></button> : <strong>{record.employeeName}</strong>}<small className="table-subline">{linkedPerson ? `اتصال: ${linkedPerson.roles.join("، ")}` : "بدون اتصال به دفتر اشخاص"}{record.note ? ` · ${record.note}` : ""}</small></td><td>{formatMoney(record.amount, state.settings.currency)}</td><td><span className={`status-pill ${statusClass(record.status)}`}>{record.status}</span></td><td>{linkedAccount ? <button type="button" className="text-button" onClick={() => setSelectedAccountForLedger(linkedAccount)} title="مشاهده گردش حساب"><strong>{linkedAccount.name}</strong></button> : "—"}</td><td className="table-actions">{record.status === "پرداختنی" && <button className="text-button" type="button" onClick={() => payRecord(record)}>پرداخت</button>}{record.status !== "باطل" && <button className="text-button danger" type="button" onClick={() => voidRecord(record)}>ابطال</button>}</td></tr>; }) : <tr><td colSpan={6}>رکوردی با فیلتر فعلی پیدا نشد.</td></tr>}</tbody></table></div></div>
+      <div className="panel table-panel"><div className="panel-heading"><div><span className="section-kicker">دفتر حقوق</span><h3>سوابق پرداخت و حقوق پرداختنی</h3></div><span className="soft-tag">حساب شخص درگیر نمی‌شود</span></div><div className="filter-grid"><label>شخص<select value={filters.personId} onChange={event => setFilters({ ...filters, personId: event.target.value })}><option value="">همهٔ اشخاص</option>{payrollPeople.map(person => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label><label>نقش<select value={filters.role} onChange={event => setFilters({ ...filters, role: event.target.value })}><option value="">همهٔ نقش‌ها</option><option value="کارگر">کارگر</option><option value="کارمند">کارمند</option><option value="شریک">شریک</option></select></label><label>وضعیت<select value={filters.status} onChange={event => setFilters({ ...filters, status: event.target.value })}><option value="همه">همهٔ وضعیت‌ها</option><option value="پرداخت‌شده">پرداخت‌شده</option><option value="پرداختنی">پرداختنی</option></select></label><label>دوره<input value={filters.period} onChange={event => setFilters({ ...filters, period: event.target.value })} placeholder="مثلاً ۱۴۰۵/۰۶" /></label></div><div className="table-wrap"><table><thead><tr><th>دوره</th><th>دریافت‌کننده</th><th>مبلغ</th><th>وضعیت</th><th>حساب پرداخت</th><th>عملیات</th></tr></thead><tbody>{filteredRecords.length ? filteredRecords.map(record => { const linkedPerson = record.personId ? state.people.find(item => item.id === record.personId) : undefined; const linkedAccount = record.accountId ? state.accounts.find(item => item.id === record.accountId) : undefined; return <tr key={record.id}><td>{record.period}</td><td>{linkedPerson ? <button type="button" className="text-button" onClick={() => setSelectedPersonForLedger(linkedPerson)} title="مشاهده پرونده مالی شخص"><strong>{linkedPerson.name}</strong></button> : <strong>{record.employeeName}</strong>}<small className="table-subline">{linkedPerson ? `اتصال: ${linkedPerson.roles.join("، ")}` : "بدون اتصال به دفتر اشخاص"}{record.note ? ` · ${record.note}` : ""}</small></td><td>{formatMoney(record.amount, state.settings.currency)}</td><td><span className={`status-pill ${statusClass(record.status)}`}>{record.status}</span></td><td>{linkedAccount ? <button type="button" className="text-button" onClick={() => setSelectedAccountForLedger(linkedAccount)} title="مشاهده گردش حساب"><strong>{linkedAccount.name}</strong></button> : "—"}</td><td className="table-actions">{record.status === "پرداختنی" && <button className="text-button" type="button" onClick={() => payRecord(record)}>پرداخت</button>}<button className="text-button" type="button" onClick={() => startEdit(record)} title="ویرایش رکورد حقوق">ویرایش</button>{record.status !== "باطل" && <button className="text-button danger" type="button" onClick={() => voidRecord(record)}>ابطال</button>}<button className="text-button danger" type="button" onClick={() => deleteRecord(record)} title="حذف کامل رکورد">حذف</button></td></tr>; }) : <tr><td colSpan={6}>رکوردی با فیلتر فعلی پیدا نشد.</td></tr>}</tbody></table></div></div>
       <div className="panel soft-panel"><strong>منطق حسابداری این صفحه</strong><p>نام کارگر، کارمند یا شریک به رکورد حقوق متصل می‌شود تا تغییر نام، گزارش و فیلترها یکپارچه باشند؛ اما تراکنش حقوق عمداً طرف‌حساب مالی ندارد. در پرداخت مستقیم، حساب بانک یا صندوق کاهش می‌یابد و هزینهٔ حقوق ثبت می‌شود. در ثبت حقوق پرداختنی، تا زمان پرداخت هیچ حساب بانکی و هیچ ماندهٔ شخصی تغییر نمی‌کند.</p></div>
       {selectedPersonForLedger && (
         <PartyLedgerDialog
@@ -4136,6 +4275,128 @@ function PayrollPage({
           onClose={() => setSelectedAccountForLedger(null)}
           onSave={onSave}
         />
+      )}
+      {editingRecord && (
+        <Dialog
+          title={`ویرایش رکورد حقوق: ${editingRecord.employeeName}`}
+          onClose={() => setEditingRecord(null)}
+        >
+          <form className="form-grid" onSubmit={savePayrollEdit}>
+            <label>
+              نام کارگر / دریافت‌کننده
+              <input
+                value={editForm.employeeName}
+                onChange={e => setEditForm({ ...editForm, employeeName: e.target.value })}
+                required
+              />
+            </label>
+            <label>
+              اتصال به اشخاص
+              <select
+                value={editForm.personId}
+                onChange={e => {
+                  const p = payrollPeople.find(item => item.id === e.target.value);
+                  setEditForm({
+                    ...editForm,
+                    personId: e.target.value,
+                    employeeName: p ? p.name : editForm.employeeName,
+                  });
+                }}
+              >
+                <option value="">بدون اتصال به دفتر اشخاص</option>
+                {payrollPeople.map(person => (
+                  <option key={person.id} value={person.id}>
+                    {person.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              مبلغ حقوق (تومان)
+              <input
+                inputMode="decimal"
+                value={editForm.amount}
+                onChange={e => setEditForm({ ...editForm, amount: e.target.value })}
+                required
+              />
+            </label>
+            <label>
+              کارمزد بانکی
+              <input
+                inputMode="numeric"
+                value={editForm.feeAmount}
+                onChange={e => setEditForm({ ...editForm, feeAmount: e.target.value })}
+                disabled={editForm.status === "پرداختنی"}
+              />
+            </label>
+            <label>
+              دوره حقوق
+              <input
+                value={editForm.period}
+                onChange={e => setEditForm({ ...editForm, period: e.target.value })}
+                required
+              />
+            </label>
+            <label>
+              تاریخ
+              <input
+                value={editForm.date}
+                onChange={e => setEditForm({ ...editForm, date: e.target.value })}
+                required
+              />
+            </label>
+            <label>
+              وضعیت
+              <select
+                value={editForm.status}
+                onChange={e =>
+                  setEditForm({
+                    ...editForm,
+                    status: e.target.value as "پرداخت‌شده" | "پرداختنی",
+                  })
+                }
+              >
+                <option value="پرداخت‌شده">پرداخت‌شده (کسر از بانک/صندوق)</option>
+                <option value="پرداختنی">پرداختنی (بدون درگیری بانک/صندوق)</option>
+              </select>
+            </label>
+            <label>
+              حساب پرداخت‌کننده
+              <select
+                value={editForm.accountId}
+                onChange={e => setEditForm({ ...editForm, accountId: e.target.value })}
+                disabled={editForm.status === "پرداختنی"}
+                required={editForm.status === "پرداخت‌شده"}
+              >
+                <option value="">انتخاب حساب</option>
+                {cashAccounts.map(account => (
+                  <option key={account.id} value={account.id}>
+                    {account.name} (موجودی: {formatMoney(account.balance, state.settings.currency)})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="full-field">
+              توضیحات
+              <textarea
+                value={editForm.note}
+                onChange={e => setEditForm({ ...editForm, note: e.target.value })}
+              />
+            </label>
+            <div className="full-field form-actions">
+              <button
+                type="button"
+                className="button button-ghost"
+                onClick={() => setEditingRecord(null)}
+              >
+                انصراف
+              </button>
+              <button type="submit" className="button button-primary">
+                ذخیره تغییرات
+              </button>
+            </div>
+          </form>
+        </Dialog>
       )}
     </div>
   );
