@@ -2196,19 +2196,20 @@ function Invoices({
           tone="violet"
         />
       </section>
-      <div className="print-customer-summary print-roll-banner">
-        <div className="print-roll-title">
-          <span>کارگاه صنعتی — گزارش طوماری فاکتورها و وضعیت تسویه (افقی)</span>
-          <strong>{invoicePartyFilter === "همه" ? "کلیه طرف‌حساب‌ها و فاکتورها" : `طرف حساب: ${personName(state, invoicePartyFilter)}`}</strong>
+      <div id="invoices-printable-area" className="invoices-printable-area">
+        <div className="print-customer-summary print-roll-banner">
+          <div className="print-roll-title">
+            <span>کارگاه صنعتی — گزارش طوماری فاکتورها و وضعیت تسویه (افقی)</span>
+            <strong>{invoicePartyFilter === "همه" ? "کلیه طرف‌حساب‌ها و فاکتورها" : `طرف حساب: ${personName(state, invoicePartyFilter)}`}</strong>
+          </div>
+          <div className="print-roll-meta">
+            <span>تاریخ گزارش: {todayJalali()}</span>
+            <span>تعداد فاکتورها: {formatNumber(displayInvoices.length)} فقره</span>
+            <span>مجموع مبلغ فاکتورها: {formatMoney(displayInvoices.reduce((sum, inv) => sum + inv.amount, 0), state.settings.currency)}</span>
+            <span>مانده تسویه‌نشده: {formatMoney(displayInvoices.reduce((sum, inv) => sum + Math.max(0, inv.amount - (inv.paidAmount || 0)), 0), state.settings.currency)}</span>
+          </div>
         </div>
-        <div className="print-roll-meta">
-          <span>تاریخ گزارش: {todayJalali()}</span>
-          <span>تعداد فاکتورها: {formatNumber(displayInvoices.length)} فقره</span>
-          <span>مجموع مبلغ فاکتورها: {formatMoney(displayInvoices.reduce((sum, inv) => sum + inv.amount, 0), state.settings.currency)}</span>
-          <span>مانده تسویه‌نشده: {formatMoney(displayInvoices.reduce((sum, inv) => sum + Math.max(0, inv.amount - (inv.paidAmount || 0)), 0), state.settings.currency)}</span>
-        </div>
-      </div>
-      <div className="toolbar invoice-filters">
+        <div className="toolbar invoice-filters">
         <label>
           نوع فاکتور
           <select
@@ -2255,9 +2256,10 @@ function Invoices({
           تخصیص گروهی چک به فاکتور
         </button>
         <PrintActionMenu
-          title="طومار فاکتورها (لنداسکیپ)"
+          title="طومار فاکتورها و تسویه چک‌ها (لنداسکیپ)"
           filename="طومار-فاکتورها"
           getTargetElement={() =>
+            document.getElementById("invoices-printable-area") ||
             document.getElementById("invoices-table-panel") ||
             (document.querySelector(".panel.table-panel") as HTMLElement) || document.body
           }
@@ -2313,17 +2315,17 @@ function Invoices({
           <table>
             <thead>
               <tr>
-                <th>شماره</th>
-                <th>تاریخ</th>
-                <th>نوع و جهت</th>
-                <th>طرف حساب</th>
-                <th>نام کالا</th>
-                <th>تعداد</th>
-                <th>قیمت پایه</th>
-                <th>مبلغ</th>
-                <th>تسویه</th>
-                <th>مانده</th>
-                <th>وضعیت</th>
+                <th style={{ width: "8%" }}>شماره</th>
+                <th style={{ width: "8%" }}>تاریخ</th>
+                <th style={{ width: "8%" }}>نوع و جهت</th>
+                <th style={{ width: "13%" }}>طرف حساب</th>
+                <th style={{ width: "14%" }}>نام کالا</th>
+                <th style={{ width: "6%" }}>تعداد</th>
+                <th style={{ width: "9%" }}>قیمت پایه</th>
+                <th style={{ width: "10%" }}>مبلغ</th>
+                <th style={{ width: "8%" }}>تسویه</th>
+                <th style={{ width: "8%" }}>مانده</th>
+                <th style={{ width: "8%" }}>وضعیت</th>
               </tr>
             </thead>
             <tbody>
@@ -2495,6 +2497,19 @@ function Invoices({
                                         {person?.phone && (
                                           <div><strong>شماره تماس:</strong> {person.phone}</div>
                                         )}
+                                        {person?.type && (
+                                          <div><strong>نقش طرف‌حساب:</strong> {person.type}</div>
+                                        )}
+                                        {person && (
+                                          <div>
+                                            <strong>وضعیت مانده کل شخص:</strong>{" "}
+                                            <span style={{ fontWeight: 700, color: person.balance > 0 ? "#b45309" : person.balance < 0 ? "#15803d" : "#64748b" }}>
+                                              {Math.abs(person.balance) > 0.01
+                                                ? `${formatMoney(Math.abs(person.balance), state.settings.currency)} (${person.balance > 0 ? "بدهکار به کارگاه" : "بستانکار از کارگاه"})`
+                                                : "تسویه حساب"}
+                                            </span>
+                                          </div>
+                                        )}
                                         {invGroup && (
                                           <div><span className="soft-tag">تخصیص گروهی: {invGroup.name}</span></div>
                                         )}
@@ -2505,7 +2520,13 @@ function Invoices({
                                           <strong>مبلغ فاکتور:</strong> {formatMoney(invoice.amount, state.settings.currency)}
                                         </div>
                                         <div>
+                                          <strong>تسویه‌شده:</strong> {formatMoney(invoice.paidAmount || 0, state.settings.currency)}
+                                        </div>
+                                        <div>
                                           <strong>مانده تسویه‌نشده:</strong> {formatMoney(Math.max(0, invoice.amount - (invoice.paidAmount || 0)), state.settings.currency)}
+                                        </div>
+                                        <div>
+                                          <strong>وضعیت تسویه:</strong> {invoice.status}
                                         </div>
                                       </div>
 
@@ -2725,6 +2746,7 @@ function Invoices({
           pageCount={invoicePageCount}
           onChange={setInvoicePage}
         />
+      </div>
       </div>
       {open && (
         <Dialog
@@ -7879,18 +7901,19 @@ function Checks({
           <small>وصول، برگشت و معکوس‌سازی</small>
         </div>
       </div>
-      <div className="print-customer-summary print-roll-banner">
-        <div className="print-roll-title">
-          <span>کارگاه صنعتی — گزارش طوماری چک‌ها و وضعیت تسویه فاکتورها (افقی)</span>
-          <strong>{checkPartyFilter === "همه" ? "کلیه چک‌ها و طرف‌حساب‌ها" : `طرف حساب: ${personName(state, checkPartyFilter)}`}</strong>
+      <div id="checks-printable-area" className="checks-printable-area">
+        <div className="print-customer-summary print-roll-banner">
+          <div className="print-roll-title">
+            <span>کارگاه صنعتی — گزارش طوماری چک‌ها و وضعیت تسویه فاکتورها (افقی)</span>
+            <strong>{checkPartyFilter === "همه" ? "کلیه چک‌ها و طرف‌حساب‌ها" : `طرف حساب: ${personName(state, checkPartyFilter)}`}</strong>
+          </div>
+          <div className="print-roll-meta">
+            <span>تاریخ گزارش: {todayJalali()}</span>
+            <span>تعداد چک‌ها: {formatNumber(visibleChecks.length)} فقره</span>
+            <span>مجموع مبلغ چک‌ها: {formatMoney(visibleChecks.reduce((sum, c) => sum + c.amount, 0), state.settings.currency)}</span>
+          </div>
         </div>
-        <div className="print-roll-meta">
-          <span>تاریخ گزارش: {todayJalali()}</span>
-          <span>تعداد چک‌ها: {formatNumber(visibleChecks.length)} فقره</span>
-          <span>مجموع مبلغ چک‌ها: {formatMoney(visibleChecks.reduce((sum, c) => sum + c.amount, 0), state.settings.currency)}</span>
-        </div>
-      </div>
-      <div className="toolbar check-filters">
+        <div className="toolbar check-filters">
         <label>
           فیلتر وضعیت
           <select
@@ -7989,9 +8012,10 @@ function Checks({
           خروجی CSV
         </button>
         <PrintActionMenu
-          title="طومار فهرست چک‌های کارگاه"
+          title="طومار فهرست چک‌های کارگاه و تخصیص فاکتورها (لنداسکیپ)"
           filename="طومار-چک‌ها"
           getTargetElement={() =>
+            document.getElementById("checks-printable-area") ||
             document.getElementById("checks-table-panel") ||
             (document.querySelector(".panel.table-panel") as HTMLElement) || document.body
           }
@@ -8040,12 +8064,12 @@ function Checks({
           <table>
             <thead>
               <tr>
-                <th>شماره چک</th>
-                <th>طرف حساب</th>
-                <th>تاریخ دریافت</th>
-                <th>سررسید</th>
-                <th>مبلغ</th>
-                <th>وضعیت</th>
+                <th style={{ width: "16%" }}>شماره چک</th>
+                <th style={{ width: "20%" }}>طرف حساب</th>
+                <th style={{ width: "14%" }}>تاریخ دریافت</th>
+                <th style={{ width: "14%" }}>سررسید</th>
+                <th style={{ width: "18%" }}>مبلغ</th>
+                <th style={{ width: "18%" }}>وضعیت</th>
                 <th className="print-private">مرجع وضعیت</th>
                 <th className="print-private">عملیات</th>
               </tr>
@@ -8322,6 +8346,16 @@ function Checks({
                                     {person?.phone && (
                                       <div><strong>شماره تماس:</strong> {person.phone}</div>
                                     )}
+                                    {person && (
+                                      <div>
+                                        <strong>وضعیت مانده کل شخص:</strong>{" "}
+                                        <span style={{ fontWeight: 700, color: person.balance > 0 ? "#b45309" : person.balance < 0 ? "#15803d" : "#64748b" }}>
+                                          {Math.abs(person.balance) > 0.01
+                                            ? `${formatMoney(Math.abs(person.balance), state.settings.currency)} (${person.balance > 0 ? "بدهکار" : "بستانکار"})`
+                                            : "تسویه"}
+                                        </span>
+                                      </div>
+                                    )}
                                     {check.bank && (
                                       <div><strong>بانک:</strong> {check.bank}</div>
                                     )}
@@ -8333,6 +8367,9 @@ function Checks({
                                     </div>
                                     <div>
                                       <strong>سررسید:</strong> {formatDate(check.dueDate)}
+                                    </div>
+                                    <div>
+                                      <strong>شماره صیادی / چک:</strong> {check.sayadNumber || check.number}
                                     </div>
                                     <div>
                                       <strong>وضعیت:</strong> {check.status}
@@ -8539,6 +8576,7 @@ function Checks({
           pageCount={checkPageCount}
           onChange={setCheckPage}
         />
+      </div>
       </div>
       {open && (
         <Dialog

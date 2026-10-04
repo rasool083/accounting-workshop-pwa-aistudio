@@ -45,7 +45,7 @@ export function PrintActionMenu({
       setIsExporting(true);
       if (onBeforeExport) {
         await onBeforeExport();
-        await new Promise(r => setTimeout(r, 250));
+        await new Promise(r => setTimeout(r, 350));
       }
       const el = getTargetElement();
       if (!el) {
@@ -76,7 +76,7 @@ export function PrintActionMenu({
       setIsExporting(true);
       if (onBeforeExport) {
         await onBeforeExport();
-        await new Promise(r => setTimeout(r, 250));
+        await new Promise(r => setTimeout(r, 350));
       }
       const el = getTargetElement();
       if (!el) {
