@@ -3545,7 +3545,11 @@ tr:last-child td {
   .print-private,
   body.print-invoice .print-private,
   body.print-checks .print-private,
-  body.print-invoices-roll .print-private {
+  body.print-invoices-roll .print-private,
+  body.print-statement .print-private,
+  body.print-ledger .print-private,
+  .effective-profit-report,
+  .effective-profit-periods {
     display: none !important;
   }
   body.print-invoice .print-customer-summary,

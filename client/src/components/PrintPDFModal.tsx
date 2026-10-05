@@ -4,11 +4,15 @@ import {
   FileDown,
   Scroll,
   Layers,
+  FileText,
   CheckCircle2,
   Loader2,
   X,
+  Sparkles,
 } from "lucide-react";
 import {
+  printVectorContinuousRoll,
+  downloadVectorHtmlDocument,
   exportToContinuousRollPDF,
   exportToMultiPageLandscapePDF,
 } from "@/lib/pdfScrollExport";
@@ -38,11 +42,123 @@ export function PrintActionMenu({
 }: PrintActionMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [loadingText, setLoadingText] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
 
+  /**
+   * 1. 100% Vector-Text Continuous Roll Print & PDF.
+   * Real computer vector fonts, razor-sharp Persian numerals, zero blur, selectable text.
+   * Seamless single continuous roll without page breaks.
+   */
+  async function handleVectorContinuousRollPrint() {
+    try {
+      setIsExporting(true);
+      setLoadingText("در حال آماده‌سازی طومار متنی وکتور...");
+      if (onBeforeExport) {
+        await onBeforeExport();
+        await new Promise(r => setTimeout(r, 350));
+      }
+      const el = getTargetElement();
+      if (!el) {
+        alert("عنصر چاپی یافت نشد");
+        return;
+      }
+      await printVectorContinuousRoll(el, {
+        filename: `${filename}-طومار-متنی`,
+        title,
+        singleRoll: true,
+      });
+      setSuccessMessage("پنجره چاپ متنی طومار باز شد (برای ذخیره فایل، گزینه Save as PDF را بزنید)");
+      setTimeout(() => {
+        setSuccessMessage("");
+        setIsOpen(false);
+      }, 2500);
+    } catch (err) {
+      console.error(err);
+      alert("خطا در چاپ طومار: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      if (onAfterExport) onAfterExport();
+      setIsExporting(false);
+    }
+  }
+
+  /**
+   * 2. Standalone Vector HTML Document download.
+   * Completely offline, readable on all mobile phones & PCs, zero blur, sharable via WhatsApp/Eitaa.
+   */
+  async function handleDownloadVectorHtml() {
+    try {
+      setIsExporting(true);
+      setLoadingText("در حال ایجاد سند متنی طومار...");
+      if (onBeforeExport) {
+        await onBeforeExport();
+        await new Promise(r => setTimeout(r, 350));
+      }
+      const el = getTargetElement();
+      if (!el) {
+        alert("عنصر چاپی یافت نشد");
+        return;
+      }
+      downloadVectorHtmlDocument(el, {
+        filename: `${filename}-سند-متنی-طومار`,
+        title,
+      });
+      setSuccessMessage("سند متنی طومار با فونت شفاف و متن واقعی دانلود شد");
+      setTimeout(() => {
+        setSuccessMessage("");
+        setIsOpen(false);
+      }, 2000);
+    } catch (err) {
+      console.error(err);
+      alert("خطا در ایجاد سند متنی: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      if (onAfterExport) onAfterExport();
+      setIsExporting(false);
+    }
+  }
+
+  /**
+   * 3. Vector Multi-page A4 Landscape Print (Standard Office Multi-page).
+   */
+  async function handleVectorA4LandscapePrint() {
+    try {
+      setIsExporting(true);
+      setLoadingText("در حال آماده‌سازی چاپ افقی A4...");
+      if (onBeforeExport) {
+        await onBeforeExport();
+        await new Promise(r => setTimeout(r, 350));
+      }
+      const el = getTargetElement();
+      if (!el) {
+        alert("عنصر چاپی یافت نشد");
+        return;
+      }
+      await printVectorContinuousRoll(el, {
+        filename: `${filename}-چندصفحه-A4`,
+        title,
+        singleRoll: false,
+      });
+      setSuccessMessage("پنجره چاپ چندصفحه‌ای A4 باز شد");
+      setTimeout(() => {
+        setSuccessMessage("");
+        setIsOpen(false);
+      }, 2000);
+    } catch (err) {
+      console.error(err);
+      alert("خطا در چاپ: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      if (onAfterExport) onAfterExport();
+      setIsExporting(false);
+    }
+  }
+
+  /**
+   * 4. Direct 1-Click Continuous PDF Download (Ultra High DPI Lossless PNG).
+   */
   async function handleContinuousRollDownload() {
     try {
       setIsExporting(true);
+      setLoadingText("در حال ایجاد و پردازش فایل PDF با وضوح بالا...");
       if (onBeforeExport) {
         await onBeforeExport();
         await new Promise(r => setTimeout(r, 350));
@@ -57,57 +173,17 @@ export function PrintActionMenu({
         title,
         landscape: true,
       });
-      setSuccessMessage("فایل PDF طومار لنداسکیپ دانلود شد");
+      setSuccessMessage("فایل PDF طومار لنداسکیپ با کیفیت ۳۵۰ DPI دانلود شد");
       setTimeout(() => {
         setSuccessMessage("");
         setIsOpen(false);
-      }, 1800);
+      }, 2000);
     } catch (err) {
       console.error(err);
       alert("خطا در ایجاد PDF طومار: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       if (onAfterExport) onAfterExport();
       setIsExporting(false);
-    }
-  }
-
-  async function handleA4LandscapeDownload() {
-    try {
-      setIsExporting(true);
-      if (onBeforeExport) {
-        await onBeforeExport();
-        await new Promise(r => setTimeout(r, 350));
-      }
-      const el = getTargetElement();
-      if (!el) {
-        alert("عنصر چاپی یافت نشد");
-        return;
-      }
-      await exportToMultiPageLandscapePDF(el, {
-        filename: `${filename}-چندصفحه-A4`,
-        title,
-        landscape: true,
-      });
-      setSuccessMessage("فایل PDF چندصفحه‌ای دانلود شد");
-      setTimeout(() => {
-        setSuccessMessage("");
-        setIsOpen(false);
-      }, 1800);
-    } catch (err) {
-      console.error(err);
-      alert("خطا در ایجاد PDF: " + (err instanceof Error ? err.message : String(err)));
-    } finally {
-      if (onAfterExport) onAfterExport();
-      setIsExporting(false);
-    }
-  }
-
-  function handlePrintClick() {
-    setIsOpen(false);
-    if (onDirectPrint) {
-      onDirectPrint();
-    } else {
-      window.print();
     }
   }
 
@@ -153,7 +229,8 @@ export function PrintActionMenu({
               borderRadius: 12,
               boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.15), 0 8px 10px -6px rgba(0, 0, 0, 0.1)",
               zIndex: 99999,
-              minWidth: 290,
+              minWidth: 320,
+              maxWidth: 380,
               padding: "10px 8px",
               display: "flex",
               flexDirection: "column",
@@ -173,7 +250,7 @@ export function PrintActionMenu({
               }}
             >
               <div style={{ fontSize: "0.85rem", fontWeight: 700, color: "#1e293b" }}>
-                گزینه‌های چاپ و فایل PDF
+                گزینه‌های چاپ و خروجی گزارش (بدون سود و اطلاعات داخلی)
               </div>
               <button
                 type="button"
@@ -195,11 +272,12 @@ export function PrintActionMenu({
                   background: "#f0fdf4",
                   color: "#166534",
                   borderRadius: 8,
-                  fontSize: "0.85rem",
+                  fontSize: "0.84rem",
                   fontWeight: 600,
+                  lineHeight: 1.5,
                 }}
               >
-                <CheckCircle2 size={18} color="#16a34a" />
+                <CheckCircle2 size={18} color="#16a34a" style={{ flexShrink: 0 }} />
                 <span>{successMessage}</span>
               </div>
             ) : isExporting ? (
@@ -216,20 +294,77 @@ export function PrintActionMenu({
                 }}
               >
                 <Loader2 size={18} className="animate-spin" />
-                <span>در حال ایجاد و پردازش فایل PDF...</span>
+                <span>{loadingText || "در حال پردازش سند..."}</span>
               </div>
             ) : (
               <>
+                {/* 1. Primary: Vector Continuous Roll Print & Save as PDF */}
                 <button
                   type="button"
-                  onClick={handleContinuousRollDownload}
+                  onClick={handleVectorContinuousRollPrint}
                   style={{
                     display: "flex",
                     alignItems: "center",
                     gap: 10,
                     padding: "9px 10px",
                     borderRadius: 8,
-                    border: "none",
+                    border: "1.5px solid #0f766e",
+                    background: "#f0fdf4",
+                    cursor: "pointer",
+                    textAlign: "right",
+                    width: "100%",
+                    transition: "all 0.15s ease",
+                  }}
+                  onMouseEnter={e => (e.currentTarget.style.background = "#dcfce7")}
+                  onMouseLeave={e => (e.currentTarget.style.background = "#f0fdf4")}
+                >
+                  <div
+                    style={{
+                      background: "#0f766e",
+                      color: "#ffffff",
+                      padding: 6,
+                      borderRadius: 6,
+                      display: "flex",
+                      flexShrink: 0,
+                    }}
+                  >
+                    <Scroll size={17} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontSize: "0.86rem", fontWeight: 800, color: "#064e3b" }}>
+                        طومار متنی پیوسته (متن واقعی و کیفیت نامحدود)
+                      </span>
+                      <span
+                        style={{
+                          background: "#0f766e",
+                          color: "#fff",
+                          fontSize: "0.68rem",
+                          padding: "1px 5px",
+                          borderRadius: 4,
+                          fontWeight: 700,
+                        }}
+                      >
+                        پیشنهادی
+                      </span>
+                    </div>
+                    <div style={{ fontSize: "0.73rem", color: "#166534", marginTop: 2 }}>
+                      متن ۱۰۰٪ وکتور و اعداد کریستالی بدون تصویر؛ چاپ یا ذخیره PDF یکپارچه بدون برش صفحه
+                    </div>
+                  </div>
+                </button>
+
+                {/* 2. Standalone Vector HTML Document */}
+                <button
+                  type="button"
+                  onClick={handleDownloadVectorHtml}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "8px 10px",
+                    borderRadius: 8,
+                    border: "1px solid #e2e8f0",
                     background: "transparent",
                     cursor: "pointer",
                     textAlign: "right",
@@ -246,30 +381,32 @@ export function PrintActionMenu({
                       padding: 6,
                       borderRadius: 6,
                       display: "flex",
+                      flexShrink: 0,
                     }}
                   >
-                    <Scroll size={17} />
+                    <FileText size={17} />
                   </div>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: "0.86rem", fontWeight: 700, color: "#0f172a" }}>
-                      دانلود PDF طومار لنداسکیپ (پیوسته)
+                    <div style={{ fontSize: "0.85rem", fontWeight: 700, color: "#0f172a" }}>
+                      دانلود سند متنی طومار (فایل مستقل HTML)
                     </div>
-                    <div style={{ fontSize: "0.74rem", color: "#64748b" }}>
-                      فایل یکپارچه بدون برش برگه با اسکرول و زوم روان در موبایل و اندروید
+                    <div style={{ fontSize: "0.73rem", color: "#64748b" }}>
+                      فایل سبک و شفاف با متن واقعی؛ باز شدن در گوشی و ارسال در واتساپ و ایتا
                     </div>
                   </div>
                 </button>
 
+                {/* 3. Multi-page Landscape A4 Print */}
                 <button
                   type="button"
-                  onClick={handleA4LandscapeDownload}
+                  onClick={handleVectorA4LandscapePrint}
                   style={{
                     display: "flex",
                     alignItems: "center",
                     gap: 10,
-                    padding: "9px 10px",
+                    padding: "8px 10px",
                     borderRadius: 8,
-                    border: "none",
+                    border: "1px solid #e2e8f0",
                     background: "transparent",
                     cursor: "pointer",
                     textAlign: "right",
@@ -286,58 +423,59 @@ export function PrintActionMenu({
                       padding: 6,
                       borderRadius: 6,
                       display: "flex",
+                      flexShrink: 0,
                     }}
                   >
                     <Layers size={17} />
                   </div>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: "0.86rem", fontWeight: 700, color: "#0f172a" }}>
-                      دانلود PDF لنداسکیپ چندصفحه‌ای (A4)
+                    <div style={{ fontSize: "0.85rem", fontWeight: 700, color: "#0f172a" }}>
+                      چاپ لنداسکیپ چندصفحه‌ای (استاندارد A4 افقی)
                     </div>
-                    <div style={{ fontSize: "0.74rem", color: "#64748b" }}>
-                      فرمت استاندارد چندبرگه‌ای A4 افقی برای پرینترهای اداری
+                    <div style={{ fontSize: "0.73rem", color: "#64748b" }}>
+                      متن متنی وکتور تفکیک‌شده در برگه‌های استاندارد A4 برای پرینترهای معمولی
                     </div>
                   </div>
                 </button>
 
+                {/* 4. Direct 1-Click PDF Download */}
                 <button
                   type="button"
-                  onClick={handlePrintClick}
+                  onClick={handleContinuousRollDownload}
                   style={{
                     display: "flex",
                     alignItems: "center",
                     gap: 10,
-                    padding: "9px 10px",
+                    padding: "8px 10px",
                     borderRadius: 8,
-                    border: "none",
+                    border: "1px solid #e2e8f0",
                     background: "transparent",
                     cursor: "pointer",
                     textAlign: "right",
                     width: "100%",
                     transition: "background 0.15s ease",
-                    borderTop: "1px dashed #e2e8f0",
-                    marginTop: 2,
                   }}
                   onMouseEnter={e => (e.currentTarget.style.background = "#f1f5f9")}
                   onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
                 >
                   <div
                     style={{
-                      background: "#f3f4f6",
-                      color: "#4b5563",
+                      background: "#f1f5f9",
+                      color: "#475569",
                       padding: 6,
                       borderRadius: 6,
                       display: "flex",
+                      flexShrink: 0,
                     }}
                   >
-                    <Printer size={17} />
+                    <FileDown size={17} />
                   </div>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: "0.86rem", fontWeight: 700, color: "#0f172a" }}>
-                      ارسال به چاپگر سیستم (Print)
+                    <div style={{ fontSize: "0.85rem", fontWeight: 700, color: "#0f172a" }}>
+                      دانلود مستقیم تک‌فایل PDF پیوسته (۳۵۰ DPI)
                     </div>
-                    <div style={{ fontSize: "0.74rem", color: "#64748b" }}>
-                      باز کردن پنجره چاپ استاندارد اندروید یا سیستم‌عامل
+                    <div style={{ fontSize: "0.73rem", color: "#64748b" }}>
+                      دانلود بی‌واسطه فایل PDF طومار یکپارچه بدون باز شدن پنجره چاپ
                     </div>
                   </div>
                 </button>

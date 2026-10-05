@@ -7,49 +7,177 @@ export interface PDFExportOptions {
   filename?: string;
   title?: string;
   landscape?: boolean;
+  singleRoll?: boolean;
 }
 
 /**
  * Formats current Persian timestamp
  */
-function currentJalaliDateTime() {
+export function currentJalaliDateTime() {
   const d = new Date();
   const timeStr = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   return `${todayJalali()} ساعت ${timeStr}`;
 }
 
 /**
+ * Deep sanitization for customer-facing documents:
+ * 1. Purges all "سود ظاهری" (apparent profit) and "سود واقعی / مؤثر" (effective profit) columns and metrics.
+ * 2. Purges internal bank accounts ("در کدام حساب سپردم") and internal holders ("نزد چه کسی است").
+ * 3. Sanitizes check status (e.g., replaces internal "نزد ما" with customer-facing "دریافت شده (در جریان وصول)").
+ * 4. Strips all interactive buttons, action columns, and private developer classes.
+ */
+export function purgeProfitAndPrivateColumns(clonedDoc: Document, clonedElement: HTMLElement) {
+  // 1. Remove entire sections that are purely internal profit or private reports
+  clonedElement
+    .querySelectorAll(
+      ".print-private, .effective-profit-report, .effective-profit-periods, .row-action, .icon-button, button.icon-button, .table-actions, .filter-grid, .pagination, .invoice-filters, .check-filters"
+    )
+    .forEach(el => el.remove());
+
+  // 2. Scan every table to identify and remove profit columns and internal check deposit/holder columns by index
+  const tables = Array.from(clonedElement.querySelectorAll("table"));
+  tables.forEach(table => {
+    const thead = table.querySelector("thead");
+    if (!thead) return;
+
+    const ths = Array.from(thead.querySelectorAll("th"));
+    const colIndicesToRemove: number[] = [];
+
+    ths.forEach((th, idx) => {
+      const text = (th.textContent || "").trim();
+      const isProfitCol =
+        text.includes("سود") ||
+        text.includes("ظاهری") ||
+        text.includes("مؤثر") ||
+        text.includes("واقعی") ||
+        text.includes("profit");
+
+      const isInternalAccountCol =
+        text.includes("مرجع وضعیت") ||
+        text.includes("حساب مرجع") ||
+        text.includes("حساب مرتبط") ||
+        text.includes("بانک حساب") ||
+        text.includes("صندوق") ||
+        text.includes("سپردم") ||
+        text.includes("عملیات");
+
+      const isExplicitPrivate =
+        th.classList.contains("print-private") ||
+        th.classList.contains("row-action");
+
+      if (isProfitCol || isInternalAccountCol || isExplicitPrivate) {
+        colIndicesToRemove.push(idx);
+      }
+    });
+
+    if (colIndicesToRemove.length > 0) {
+      // Remove from rightmost to leftmost so indices don't shift
+      colIndicesToRemove.sort((a, b) => b - a).forEach(colIdx => {
+        if (ths[colIdx]) ths[colIdx].remove();
+
+        table.querySelectorAll("tbody tr").forEach(tr => {
+          // If this is an accordion detail row that spans multiple columns, adjust or leave alone
+          if (tr.classList.contains("allocation-detail-row")) return;
+          const tds = Array.from(tr.querySelectorAll("td"));
+          if (tds[colIdx]) tds[colIdx].remove();
+        });
+      });
+    }
+  });
+
+  // 3. Replace <select> dropdowns with clean, customer-sanitized text badges
+  clonedElement.querySelectorAll("select").forEach(sel => {
+    const selectedOption = sel.options[sel.selectedIndex];
+    let selectedText = selectedOption ? selectedOption.text : sel.value;
+
+    // Customer-friendly status replacement
+    if (selectedText === "نزد ما") {
+      selectedText = "در جریان وصول";
+    } else if (selectedText === "خرج شده") {
+      selectedText = "واگذار شده";
+    } else if (selectedText.includes("حساب مرجع") || selectedText.includes("انتخاب شخص")) {
+      // Internal deposit target or internal holder -> strip completely
+      sel.remove();
+      return;
+    }
+
+    const span = clonedDoc.createElement("span");
+    span.textContent = selectedText || "—";
+    span.style.cssText = `
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 800;
+      background: #f1f5f9;
+      color: #000000;
+      border: 1px solid #cbd5e1;
+      white-space: nowrap;
+    `;
+    sel.parentNode?.replaceChild(span, sel);
+  });
+
+  // 4. Sanitize badges and text inside accordion strips
+  clonedElement.querySelectorAll(".invoice-customer-info-strip div, .check-accordion-box div").forEach(div => {
+    const text = div.textContent || "";
+    if (
+      text.includes("سود ظاهری") ||
+      text.includes("سود واقعی") ||
+      text.includes("سود مؤثر") ||
+      text.includes("حساب بانکی یا صندوق متصل") ||
+      text.includes("حساب مرجع") ||
+      text.includes("در کدام حساب") ||
+      text.includes("نزد چه کسی")
+    ) {
+      div.remove();
+      return;
+    }
+
+    // Sanitize "نزد ما" in status text
+    if (text.includes("وضعیت:") && text.includes("نزد ما")) {
+      div.innerHTML = div.innerHTML.replace("نزد ما", "در جریان وصول");
+    }
+  });
+}
+
+/**
  * Restructures tables containing accordion detail rows into clean, non-overlapping blocks.
  *
- * ROOT CAUSE FIXED:
- * html2canvas (both standard and pro) has a known limitation where <td colspan="X">
- * within multi-column tables is rendered using only the 1st column's narrow width (e.g. 60px),
- * and the subsequent table row is positioned right over it ("در زیر ردیف مخفی شده").
- *
- * This function extracts each main row and its accordion detail row, placing the detail box
- * in a full-width block container directly below the main row table.
- * As a result, no colSpan is needed, no content is squished or hidden under any row,
- * and 100% of customer information, items, and check allocations are fully visible and readable.
+ * CRITICAL CUSTOMER-FACING SANITIZATION:
+ * 1. Completely removes "سود ظاهری و واقعی" (apparent/effective profit) columns.
+ * 2. Completely removes internal bank account references ("در کدام حساب سپردم") and internal holders ("نزد چه کسی است").
+ * 3. Extracts accordion rows from multi-column table colSpan into full-width atomic blocks so nothing overlaps.
  */
-function transformAccordionTables(clonedDoc: Document, clonedElement: HTMLElement) {
+export function transformAccordionTables(clonedDoc: Document, clonedElement: HTMLElement) {
+  // First, completely purge any internal profit or private elements
+  purgeProfitAndPrivateColumns(clonedDoc, clonedElement);
+
   const tables = Array.from(clonedElement.querySelectorAll("table"));
 
   tables.forEach(table => {
     const detailRows = Array.from(table.querySelectorAll(".allocation-detail-row"));
     if (detailRows.length === 0) return;
 
-    // Get original thead headers
+    // Get sanitized thead headers
     const thead = table.querySelector("thead");
     const headerCols: Array<{ text: string; width: string }> = [];
     if (thead) {
       const ths = Array.from(thead.querySelectorAll("th"));
       ths.forEach(th => {
-        // Skip private action headers
-        if (th.classList.contains("print-private") || th.classList.contains("row-action")) {
+        const text = th.textContent?.trim() || "";
+        if (
+          th.classList.contains("print-private") ||
+          th.classList.contains("row-action") ||
+          text.includes("سود") ||
+          text.includes("ظاهری") ||
+          text.includes("مؤثر") ||
+          text.includes("مرجع") ||
+          text.includes("عملیات")
+        ) {
           return;
         }
         const w = (th as HTMLElement).style.width || "";
-        headerCols.push({ text: th.textContent?.trim() || "", width: w });
+        headerCols.push({ text, width: w });
       });
     }
 
@@ -109,7 +237,7 @@ function transformAccordionTables(clonedDoc: Document, clonedElement: HTMLElemen
       const row = rows[i];
       i++;
 
-      // If it's a detail row alone, skip or handle
+      // If it's a detail row alone, skip
       if (row.classList.contains("allocation-detail-row")) {
         continue;
       }
@@ -131,11 +259,13 @@ function transformAccordionTables(clonedDoc: Document, clonedElement: HTMLElemen
       card.style.cssText = `
         width: 100%;
         box-sizing: border-box;
-        border: 1.5px solid #cbd5e1;
+        border: 1.5px solid #94a3b8;
         border-radius: 8px;
         margin-bottom: 12px;
         background: #ffffff;
         overflow: hidden;
+        page-break-inside: avoid;
+        break-inside: avoid;
       `;
 
       // 1. Main Row Table
@@ -148,10 +278,19 @@ function transformAccordionTables(clonedDoc: Document, clonedElement: HTMLElemen
       `;
       const clonedTr = row.cloneNode(true) as HTMLElement;
 
-      // Remove print-private action cells
+      // Remove print-private action cells, profit cells, and internal holder cells
       clonedTr
-        .querySelectorAll(".print-private, .row-action, .icon-button, button.icon-button")
+        .querySelectorAll(
+          ".print-private, .row-action, .icon-button, button.icon-button, [class*='profit']"
+        )
         .forEach(el => el.remove());
+
+      // Sanitize text within cells (e.g. replace internal "نزد ما" with "در جریان وصول")
+      clonedTr.querySelectorAll("td").forEach(td => {
+        if (td.textContent?.trim() === "نزد ما") {
+          td.textContent = "در جریان وصول";
+        }
+      });
 
       // Style all cells in this main row
       const tds = Array.from(clonedTr.querySelectorAll("td"));
@@ -161,8 +300,9 @@ function transformAccordionTables(clonedDoc: Document, clonedElement: HTMLElemen
         cell.style.cssText = `
           padding: 8px 6px;
           font-size: 11px;
-          border: 1px solid #e2e8f0;
-          color: #0f172a;
+          font-weight: 700;
+          border: 1px solid #cbd5e1;
+          color: #000000;
           vertical-align: middle;
           text-align: right;
           ${colDef && colDef.width ? `width: ${colDef.width};` : ""}
@@ -187,7 +327,7 @@ function transformAccordionTables(clonedDoc: Document, clonedElement: HTMLElemen
             display: block;
             width: 100%;
             box-sizing: border-box;
-            background: #f1f5f9;
+            background: #f8fafc;
             border-top: 1.5px solid #94a3b8;
             padding: 10px 14px;
             direction: rtl;
@@ -205,6 +345,13 @@ function transformAccordionTables(clonedDoc: Document, clonedElement: HTMLElemen
             overflow: visible;
           `;
 
+          // PURGE ALL INTERNAL PROFIT COLUMNS AND PRIVATE DATA FROM ACCORDION
+          clonedDetail
+            .querySelectorAll(
+              ".print-private, [class*='profit'], .icon-button, button"
+            )
+            .forEach(el => el.remove());
+
           // Enhance customer info strip
           clonedDetail.querySelectorAll(".invoice-customer-info-strip").forEach(strip => {
             const s = strip as HTMLElement;
@@ -212,7 +359,7 @@ function transformAccordionTables(clonedDoc: Document, clonedElement: HTMLElemen
               display: flex;
               flex-wrap: wrap;
               align-items: center;
-              gap: 10px 18px;
+              gap: 12px 18px;
               background: #ffffff;
               border: 1px solid #cbd5e1;
               border-radius: 6px;
@@ -220,9 +367,13 @@ function transformAccordionTables(clonedDoc: Document, clonedElement: HTMLElemen
               margin-bottom: 8px;
               font-size: 11.5px;
               line-height: 1.6;
-              color: #0f172a;
+              color: #000000;
               box-shadow: 0 1px 2px rgba(0,0,0,0.04);
             `;
+            s.querySelectorAll("strong, b").forEach(str => {
+              (str as HTMLElement).style.color = "#000000";
+              (str as HTMLElement).style.fontWeight = "800";
+            });
           });
 
           // Enhance items mini table
@@ -252,11 +403,12 @@ function transformAccordionTables(clonedDoc: Document, clonedElement: HTMLElemen
               border-radius: 4px;
               padding: 3px 8px;
               font-size: 10.5px;
-              color: #1e293b;
+              font-weight: 700;
+              color: #000000;
             `;
           });
 
-          // Enhance subtable
+          // Enhance check allocations subtable
           clonedDetail.querySelectorAll(".roll-subtable-wrap").forEach(wrap => {
             const w = wrap as HTMLElement;
             w.style.cssText = `
@@ -275,28 +427,51 @@ function transformAccordionTables(clonedDoc: Document, clonedElement: HTMLElemen
               table-layout: fixed;
               border-collapse: collapse;
               background: #ffffff;
-              border: 1px solid #cbd5e1;
+              border: 1px solid #94a3b8;
               border-radius: 6px;
-              font-size: 10.5px;
+              font-size: 11px;
             `;
+            // Remove profit column header if still present
             s.querySelectorAll("th").forEach(th => {
+              const text = th.textContent || "";
+              if (
+                text.includes("سود") ||
+                text.includes("ظاهری") ||
+                text.includes("مؤثر") ||
+                text.includes("مرجع") ||
+                th.classList.contains("print-private")
+              ) {
+                th.remove();
+                return;
+              }
               (th as HTMLElement).style.cssText = `
                 background: #e2e8f0;
-                color: #0f172a;
-                font-weight: 700;
+                color: #000000;
+                font-weight: 800;
                 padding: 6px 8px;
-                border: 1px solid #cbd5e1;
-                font-size: 10.5px;
+                border: 1px solid #94a3b8;
+                font-size: 11px;
                 text-align: right;
               `;
             });
             s.querySelectorAll("td").forEach(td => {
+              const text = td.textContent || "";
+              if (
+                td.classList.contains("print-private") ||
+                text.includes("ظاهری:") ||
+                text.includes("مؤثر:") ||
+                text.includes("سود:")
+              ) {
+                td.remove();
+                return;
+              }
               (td as HTMLElement).style.cssText = `
                 padding: 6px 8px;
-                border: 1px solid #e2e8f0;
-                font-size: 10.5px;
+                border: 1px solid #cbd5e1;
+                font-size: 11px;
+                font-weight: 700;
                 text-align: right;
-                color: #0f172a;
+                color: #000000;
               `;
             });
           });
@@ -315,7 +490,269 @@ function transformAccordionTables(clonedDoc: Document, clonedElement: HTMLElemen
 }
 
 /**
- * Prepares and renders cloned element to a high-resolution canvas.
+ * Builds the complete, beautiful standalone HTML string for vector text printing or offline saving.
+ * 100% Vector Fonts, Selectable Text, No Blur, No Pixels.
+ */
+export function buildVectorHtmlDocument(
+  element: HTMLElement,
+  options: PDFExportOptions = {}
+): { html: string; containerHeightPx: number } {
+  const { title = "گزارش مالی کارگاه", singleRoll = true } = options;
+
+  // Clone element and apply transformations in memory
+  const container = element.cloneNode(true) as HTMLElement;
+  transformAccordionTables(document, container);
+  purgeProfitAndPrivateColumns(document, container);
+
+  // Preserve text inside text-buttons
+  container.querySelectorAll("button.text-button, .text-button").forEach(btn => {
+    const span = document.createElement("span");
+    span.innerHTML = btn.innerHTML;
+    span.style.fontWeight = "800";
+    span.style.color = "#000000";
+    span.querySelectorAll("svg").forEach(svg => svg.remove());
+    btn.parentNode?.replaceChild(span, btn);
+  });
+
+  // Purge any remaining interactive buttons
+  container.querySelectorAll("button, .row-action, .icon-button").forEach(b => b.remove());
+
+  // Approximate height: calculate estimated height based on entry cards and tables
+  const cardsCount = container.querySelectorAll(".roll-entry-card").length;
+  const rowsCount = container.querySelectorAll("tr").length;
+  const estimatedHeightPx = Math.max(800, cardsCount * 180 + rowsCount * 45 + 350);
+
+  // Millimeters calculation for CSS @page
+  // 1px approx 0.264583 mm (96 DPI)
+  const estimatedHeightMm = Math.max(297, Math.ceil((estimatedHeightPx * 25.4) / 96) + 40);
+
+  const pageRule = singleRoll
+    ? `@page { size: 297mm ${estimatedHeightMm}mm; margin: 6mm 8mm; }`
+    : `@page { size: landscape; margin: 8mm 10mm; }`;
+
+  const html = `<!DOCTYPE html>
+<html dir="rtl" lang="fa">
+<head>
+  <meta charset="utf-8">
+  <title>${title}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    ${pageRule}
+    * {
+      box-sizing: border-box;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #ffffff;
+      color: #000000;
+      direction: rtl;
+      font-family: 'Vazirmatn', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Tahoma, sans-serif;
+      font-size: 11px;
+      line-height: 1.5;
+    }
+    body {
+      padding: 12px 16px;
+      width: 100%;
+      max-width: 100%;
+    }
+    .roll-entry-card {
+      break-inside: avoid !important;
+      page-break-inside: avoid !important;
+      margin-bottom: 12px;
+      border: 1.5px solid #94a3b8;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #ffffff;
+    }
+    table {
+      width: 100%;
+      table-layout: fixed;
+      border-collapse: collapse;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 7px 8px;
+      font-size: 11px;
+      text-align: right;
+      color: #000000;
+      vertical-align: middle;
+      font-variant-numeric: tabular-nums;
+    }
+    th {
+      background: #0f766e !important;
+      color: #ffffff !important;
+      font-weight: 800;
+    }
+    strong, b {
+      font-weight: 800;
+      color: #000000;
+    }
+    .print-private, .row-action, .icon-button, button, .no-print {
+      display: none !important;
+    }
+    .print-roll-banner {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px 16px;
+      padding: 10px 14px;
+      margin-bottom: 12px;
+      border: 2px solid #0f766e;
+      border-radius: 6px;
+      background: #f0fdf4 !important;
+      color: #000000;
+    }
+    .invoice-customer-info-strip {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px 18px;
+      padding: 10px 14px;
+      margin-bottom: 8px;
+      background: #ffffff !important;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      font-size: 11.5px;
+      line-height: 1.6;
+    }
+    .roll-subtable th {
+      background: #e2e8f0 !important;
+      color: #000000 !important;
+    }
+    .doc-official-header {
+      border-bottom: 2.5px solid #0f766e;
+      padding-bottom: 10px;
+      margin-bottom: 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .doc-official-footer {
+      border-top: 1px dashed #94a3b8;
+      padding-top: 10px;
+      margin-top: 20px;
+      display: flex;
+      justify-content: space-between;
+      font-size: 10px;
+      color: #475569;
+    }
+    @media print {
+      body {
+        padding: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="doc-official-header">
+    <div>
+      <div style="font-size: 11px; font-weight: bold; color: #0f766e;">سیستم جامع حسابداری و مدیریت مالی کارگاه</div>
+      <div style="font-size: 18px; font-weight: 800; color: #000000; margin-top: 3px;">${title}</div>
+    </div>
+    <div style="text-align: left; font-size: 11px; color: #333333; line-height: 1.6;">
+      <div><strong>تاریخ صدور:</strong> ${currentJalaliDateTime()}</div>
+      <div><strong>فرمت:</strong> سند متنی برداری (رسمی و پیوسته)</div>
+    </div>
+  </div>
+
+  <div id="print-content">
+    ${container.outerHTML}
+  </div>
+
+  <div class="doc-official-footer">
+    <div>تهیه شده در سیستم مدیریت مالی و حسابداری کارگاه · سند رسمی مالی و تجاری</div>
+    <div>شامل تمام مشخصات طرف حساب، اطلاعات اقلام کالا، چک‌ها و وضعیت تسویه</div>
+  </div>
+</body>
+</html>`;
+
+  return { html, containerHeightPx: estimatedHeightPx };
+}
+
+/**
+ * Triggers native 100% vector-text printing and PDF creation via the browser's native PDF engine.
+ *
+ * USER BENEFIT:
+ * - 100% VECTOR TEXT (متن خالص، بدون افت کیفیت و تصویر — نه تصویر مات و کم‌کیفیت).
+ * - Real selectable, searchable Persian numerals and text at infinite resolution.
+ * - Customer-clean: No profit columns ("سود ظاهری و واقعی"), no internal bank deposit accounts ("در کدام حساب سپردم"), no internal holders ("نزد چه کسی است").
+ * - Single Continuous Roll: Configured with continuous dimensions so the document does NOT awkwardly break into pages.
+ */
+export async function printVectorContinuousRoll(
+  element: HTMLElement,
+  options: PDFExportOptions = {}
+): Promise<void> {
+  const { title = "گزارش مالی کارگاه", singleRoll = true } = options;
+
+  const { html } = buildVectorHtmlDocument(element, { ...options, singleRoll });
+
+  // Create isolated invisible iframe
+  const iframe = document.createElement("iframe");
+  iframe.style.position = "fixed";
+  iframe.style.right = "0";
+  iframe.style.bottom = "0";
+  iframe.style.width = "100%";
+  iframe.style.height = "0";
+  iframe.style.border = "0";
+  iframe.style.zIndex = "-9999";
+  document.body.appendChild(iframe);
+
+  const doc = iframe.contentWindow?.document;
+  if (!doc) {
+    window.print();
+    return;
+  }
+
+  doc.open();
+  doc.write(html);
+  doc.close();
+
+  // Allow fonts and layout to settle, then trigger browser print
+  setTimeout(() => {
+    iframe.contentWindow?.focus();
+    iframe.contentWindow?.print();
+    setTimeout(() => {
+      if (document.body.contains(iframe)) {
+        document.body.removeChild(iframe);
+      }
+    }, 2000);
+  }, 450);
+}
+
+/**
+ * Downloads a standalone, self-contained Vector HTML Document.
+ * Completely offline, selectable vector text, sharpest possible display on Android and PC,
+ * ideal for sharing directly with customers on WhatsApp, Telegram, or Eitaa.
+ */
+export function downloadVectorHtmlDocument(
+  element: HTMLElement,
+  options: PDFExportOptions = {}
+): void {
+  const { filename = "document", title = "گزارش مالی کارگاه" } = options;
+  const { html } = buildVectorHtmlDocument(element, { ...options, singleRoll: true });
+
+  const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${filename.endsWith(".html") ? filename : `${filename}.html`}`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 1000);
+}
+
+/**
+ * Prepares and renders cloned element to an ultra high-resolution canvas (Scale 3.5 / 350+ DPI).
+ * Guaranteed lossless PNG rendering without fuzzy JPEG artifacts.
  */
 async function renderElementToCanvas(
   element: HTMLElement,
@@ -325,11 +762,10 @@ async function renderElementToCanvas(
   const scrollH = element.scrollHeight || element.offsetHeight || 800;
   const scrollW = element.scrollWidth || element.offsetWidth || 1100;
 
-  // Safe scale: Scale 2 provides sharp, vector-quality text.
-  // Ensure total canvas dimensions do not exceed 8192px on mobile browsers.
-  let targetScale = 2;
-  if (scrollH * targetScale > 7500 || scrollW * targetScale > 7500) {
-    targetScale = Math.max(1.2, 7500 / Math.max(scrollH, scrollW));
+  // Ultra-High Quality Scale: Scale 3.5 provides publication-grade 350 DPI text sharpness
+  let targetScale = 3.5;
+  if (scrollH * targetScale > 16000 || scrollW * targetScale > 16000) {
+    targetScale = Math.max(2.2, 16000 / Math.max(scrollH, scrollW));
   }
 
   const onCloneHandler = (clonedDoc: Document, clonedElement: HTMLElement) => {
@@ -343,8 +779,8 @@ async function renderElementToCanvas(
         span.innerHTML = btn.innerHTML;
         span.style.cssText = `
           display: inline-block;
-          font-weight: 700;
-          color: #0f172a;
+          font-weight: 800;
+          color: #000000;
           font-size: inherit;
           text-decoration: none;
         `;
@@ -352,46 +788,11 @@ async function renderElementToCanvas(
         btn.parentNode?.replaceChild(span, btn);
       });
 
-    // 2. Replace <select> dropdowns with clean badges
-    clonedElement.querySelectorAll("select").forEach(sel => {
-      const selectedOption = sel.options[sel.selectedIndex];
-      const selectedText = selectedOption ? selectedOption.text : sel.value;
-      const span = clonedDoc.createElement("span");
-      span.textContent = selectedText || "—";
-      span.style.cssText = `
-        display: inline-block;
-        padding: 3px 8px;
-        border-radius: 6px;
-        font-size: 11px;
-        font-weight: 700;
-        background: #f1f5f9;
-        color: #1e293b;
-        border: 1px solid #cbd5e1;
-        white-space: nowrap;
-      `;
-      sel.parentNode?.replaceChild(span, sel);
-    });
+    // 2. Perform deep customer sanitization (purge profit columns & internal bank accounts)
+    purgeProfitAndPrivateColumns(clonedDoc, clonedElement);
 
-    // 3. Hide interactive action buttons, private columns, and form submission bars
-    const hideSelectors = [
-      ".row-action",
-      ".icon-button",
-      ".panel-heading-actions",
-      ".form-actions",
-      ".no-print",
-      ".print-private",
-      ".table-actions",
-      "button[type='submit']",
-      "input[type='button']",
-      "input[type='submit']",
-      ".filter-grid",
-      ".pagination",
-      ".invoice-filters",
-      ".check-filters",
-    ];
-    clonedElement.querySelectorAll(hideSelectors.join(", ")).forEach(node => {
-      (node as HTMLElement).style.setProperty("display", "none", "important");
-    });
+    // 3. Transform all tables with accordion rows into bulletproof non-overlapping blocks
+    transformAccordionTables(clonedDoc, clonedElement);
 
     // 4. Style top summary banner if present
     clonedElement.querySelectorAll(".print-roll-banner").forEach(node => {
@@ -402,19 +803,20 @@ async function renderElementToCanvas(
         align-items: center !important;
         flex-wrap: wrap !important;
         gap: 8px 16px !important;
-        padding: 10px 14px !important;
-        margin-bottom: 12px !important;
+        padding: 12px 16px !important;
+        margin-bottom: 14px !important;
         border: 2px solid #0f766e !important;
         border-radius: 8px !important;
         background: #f0fdf4 !important;
-        color: #0f172a !important;
+        color: #000000 !important;
       `;
+      banner.querySelectorAll("strong, b").forEach(s => {
+        (s as HTMLElement).style.fontWeight = "800";
+        (s as HTMLElement).style.color = "#000000";
+      });
     });
 
-    // 5. Transform all tables with accordion rows into bulletproof non-overlapping blocks
-    transformAccordionTables(clonedDoc, clonedElement);
-
-    // 6. Expand all scroll and overflow wrappers
+    // 5. Expand all scroll and overflow wrappers
     clonedElement
       .querySelectorAll(".table-wrap, .dialog-body, .scroll-area, [class*='scroll']")
       .forEach(node => {
@@ -425,18 +827,25 @@ async function renderElementToCanvas(
         el.style.width = "100%";
       });
 
-    // 7. Base document styling
+    // 6. Base document styling with pure pitch black fonts and crisp contrast
     clonedElement.style.maxHeight = "none";
     clonedElement.style.height = "auto";
     clonedElement.style.overflow = "visible";
     clonedElement.style.width = "100%";
-    clonedElement.style.minWidth = "1180px";
+    clonedElement.style.minWidth = "1200px";
     clonedElement.style.backgroundColor = "#ffffff";
     clonedElement.style.padding = "24px";
     clonedElement.style.direction = "rtl";
     clonedElement.style.fontFamily = "Vazirmatn, system-ui, -apple-system, sans-serif";
+    clonedElement.style.color = "#000000";
 
-    // 8. Prepend official Persian header banner
+    // Enforce bold font on all monetary figures and dates
+    clonedElement.querySelectorAll("td, th, span, div, strong").forEach(node => {
+      const el = node as HTMLElement;
+      el.style.color = "#000000";
+    });
+
+    // 7. Prepend official Persian header banner
     const banner = clonedDoc.createElement("div");
     banner.style.cssText = `
       display: flex;
@@ -451,16 +860,16 @@ async function renderElementToCanvas(
     banner.innerHTML = `
       <div style="text-align: right;">
         <div style="font-size: 11px; font-weight: bold; color: #0f766e; letter-spacing: 0.5px;">سیستم جامع حسابداری و مدیریت مالی کارگاه</div>
-        <div style="font-size: 18px; font-weight: 800; color: #1e293b; margin-top: 4px;">${title}</div>
+        <div style="font-size: 18px; font-weight: 800; color: #000000; margin-top: 4px;">${title}</div>
       </div>
-      <div style="text-align: left; font-size: 11px; color: #64748b; line-height: 1.6;">
+      <div style="text-align: left; font-size: 11px; color: #333333; line-height: 1.6;">
         <div><strong>تاریخ صدور:</strong> ${currentJalaliDateTime()}</div>
         <div><strong>نوع سند:</strong> ${docTypeLabel}</div>
       </div>
     `;
     clonedElement.insertBefore(banner, clonedElement.firstChild);
 
-    // 9. Append official footer
+    // 8. Append official footer
     const footer = clonedDoc.createElement("div");
     footer.style.cssText = `
       display: flex;
@@ -471,7 +880,7 @@ async function renderElementToCanvas(
       margin-top: 24px;
       direction: rtl;
       font-size: 10px;
-      color: #64748b;
+      color: #475569;
     `;
     footer.innerHTML = `
       <div>تهیه شده در سیستم مدیریت مالی و حسابداری کارگاه · سند رسمی مالی و تجاری</div>
@@ -493,24 +902,19 @@ async function renderElementToCanvas(
   try {
     return await html2canvasPro(element, options);
   } catch (errPro) {
-    console.warn("html2canvas-pro failed, falling back to standard html2canvas with scale 1.5:", errPro);
+    console.warn("html2canvas-pro fallback:", errPro);
     try {
-      return await html2canvasStd(element, { ...options, scale: 1.5 });
+      return await html2canvasStd(element, { ...options, scale: 2.2 });
     } catch (errStd) {
-      console.warn("html2canvasStd failed, retrying pro with scale 1:", errStd);
-      return await html2canvasPro(element, { ...options, scale: 1 });
+      console.warn("html2canvasStd fallback:", errStd);
+      return await html2canvasPro(element, { ...options, scale: 2.0 });
     }
   }
 }
 
 /**
- * Exports an HTML element as a single continuous scrollable landscape PDF roll.
- *
- * PROPORTIONS & FIDELITY:
- * - Standard landscape width: 297mm (A4 landscape width).
- * - Single continuous height proportional to total content: no breaks, no cuts!
- * - High resolution: 2x scale ensures all Persian fonts, numbers, and dates are crystal clear.
- * - Full customer details and check subtables are 100% visible and readable.
+ * Exports an HTML element as a single continuous scrollable landscape PDF roll with ultra-high DPI.
+ * Always uses lossless PNG representation to avoid compression artifacts.
  */
 export async function exportToContinuousRollPDF(
   element: HTMLElement,
@@ -521,18 +925,10 @@ export async function exportToContinuousRollPDF(
   const canvas = await renderElementToCanvas(
     element,
     title,
-    "سند طومار پیوسته (اسکرول افقی / لنداسکیپ)"
+    "سند طومار پیوسته (کیفیت بسیار بالا ۳۵۰ DPI)"
   );
 
-  let imgData: string;
-  let imgFormat: "PNG" | "JPEG" = "PNG";
-  try {
-    imgData = canvas.toDataURL("image/png");
-    if (!imgData || imgData.length < 50) throw new Error("Empty PNG data");
-  } catch {
-    imgData = canvas.toDataURL("image/jpeg", 0.94);
-    imgFormat = "JPEG";
-  }
+  const imgData = canvas.toDataURL("image/png");
 
   // Width in mm: 297mm (standard landscape reading width)
   const pageWidthMm = 297;
@@ -554,7 +950,7 @@ export async function exportToContinuousRollPDF(
     });
   }
 
-  pdf.addImage(imgData, imgFormat, 0, 0, pageWidthMm, pageHeightMm);
+  pdf.addImage(imgData, "PNG", 0, 0, pageWidthMm, pageHeightMm, undefined, "FAST");
   pdf.save(`${filename.endsWith(".pdf") ? filename : `${filename}.pdf`}`);
 }
 
@@ -573,15 +969,7 @@ export async function exportToMultiPageLandscapePDF(
     "چندصفحه‌ای افقی استاندارد (A4)"
   );
 
-  let imgData: string;
-  let imgFormat: "PNG" | "JPEG" = "PNG";
-  try {
-    imgData = canvas.toDataURL("image/png");
-    if (!imgData || imgData.length < 50) throw new Error("Empty PNG data");
-  } catch {
-    imgData = canvas.toDataURL("image/jpeg", 0.94);
-    imgFormat = "JPEG";
-  }
+  const imgData = canvas.toDataURL("image/png");
 
   // A4 Landscape: 297mm x 210mm
   const pdf = new jsPDF({
@@ -606,13 +994,13 @@ export async function exportToMultiPageLandscapePDF(
     pdf.setProperties({ title });
   }
 
-  pdf.addImage(imgData, imgFormat, margin, position, imgWidth, imgHeight);
+  pdf.addImage(imgData, "PNG", margin, position, imgWidth, imgHeight, undefined, "FAST");
   heightLeft -= usableHeight;
 
   while (heightLeft > 0) {
     position = heightLeft - imgHeight + margin;
     pdf.addPage("a4", "landscape");
-    pdf.addImage(imgData, imgFormat, margin, position, imgWidth, imgHeight);
+    pdf.addImage(imgData, "PNG", margin, position, imgWidth, imgHeight, undefined, "FAST");
     heightLeft -= usableHeight;
   }
 

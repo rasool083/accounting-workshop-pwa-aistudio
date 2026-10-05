@@ -2552,12 +2552,11 @@ function Invoices({
                                     <table className="roll-subtable">
                                     <thead>
                                       <tr>
-                                        <th style={{ width: "21%" }}>اطلاعات چک</th>
-                                        <th style={{ width: "15%" }}>روزهای دیرکرد و درصد پله</th>
-                                        <th style={{ width: "16%" }}>هزینه دیرکرد</th>
-                                        <th style={{ width: "13%" }}>مانده چک</th>
-                                        <th style={{ width: "16%" }}>مانده فاکتور (خالص)</th>
-                                        <th className="print-private" style={{ width: "19%" }}>سود ظاهری و واقعی</th>
+                                        <th style={{ width: "26%" }}>اطلاعات چک</th>
+                                        <th style={{ width: "18%" }}>روزهای دیرکرد و درصد پله</th>
+                                        <th style={{ width: "20%" }}>هزینه دیرکرد</th>
+                                        <th style={{ width: "16%" }}>مانده چک</th>
+                                        <th style={{ width: "20%" }}>مانده فاکتور (خالص)</th>
                                       </tr>
                                     </thead>
                                     <tbody>
@@ -2678,36 +2677,7 @@ function Invoices({
                                                 </small>
                                               )}
                                             </td>
-                                            {/* ستون ششم : سود ظاهری و سود واقعی (مخفی در پرینت) */}
-                                            <td className="print-private">
-                                              {profitBreakdown && profitBreakdown.costBasisKnown ? (
-                                                <div>
-                                                  <div>
-                                                    <span style={{ color: "#0369a1", fontSize: "0.75rem" }}>ظاهری: </span>
-                                                    <strong>{formatMoney(profitBreakdown.apparentProfit, state.settings.currency)}</strong>
-                                                    <small style={{ color: "#555", marginRight: 4 }}>
-                                                      ({formatNumber(Number((profitBreakdown.apparentRate * 100).toFixed(1)))}٪)
-                                                    </small>
-                                                  </div>
-                                                  <div style={{ marginTop: 2 }}>
-                                                    <span style={{ color: "#15803d", fontSize: "0.75rem" }}>واقعی: </span>
-                                                    <strong>{formatMoney(profitBreakdown.effectiveProfit, state.settings.currency)}</strong>
-                                                    <small style={{ color: "#555", marginRight: 4 }}>
-                                                      ({formatNumber(Number((profitBreakdown.effectiveRate * 100).toFixed(1)))}٪)
-                                                    </small>
-                                                    {!profitBreakdown.isCollected && (
-                                                      <small style={{ display: "block", color: "#b45309", fontSize: "0.68rem" }}>
-                                                        (برآورد — در انتظار وصول)
-                                                      </small>
-                                                    )}
-                                                  </div>
-                                                </div>
-                                              ) : (
-                                                <span className="muted-cell" style={{ fontSize: "0.75rem" }}>
-                                                  بهای تمام‌شده ثبت‌نشده
-                                                </span>
-                                              )}
-                                            </td>
+
                                           </tr>
                                         );
                                       })}
@@ -8064,12 +8034,12 @@ function Checks({
           <table>
             <thead>
               <tr>
-                <th style={{ width: "16%" }}>شماره چک</th>
-                <th style={{ width: "20%" }}>طرف حساب</th>
-                <th style={{ width: "14%" }}>تاریخ دریافت</th>
-                <th style={{ width: "14%" }}>سررسید</th>
-                <th style={{ width: "18%" }}>مبلغ</th>
-                <th style={{ width: "18%" }}>وضعیت</th>
+                <th style={{ width: "18%" }}>شماره چک</th>
+                <th style={{ width: "22%" }}>طرف حساب</th>
+                <th style={{ width: "15%" }}>تاریخ دریافت</th>
+                <th style={{ width: "15%" }}>سررسید</th>
+                <th style={{ width: "15%" }}>مبلغ</th>
+                <th style={{ width: "15%" }}>وضعیت</th>
                 <th className="print-private">مرجع وضعیت</th>
                 <th className="print-private">عملیات</th>
               </tr>
@@ -8372,7 +8342,7 @@ function Checks({
                                       <strong>شماره صیادی / چک:</strong> {check.sayadNumber || check.number}
                                     </div>
                                     <div>
-                                      <strong>وضعیت:</strong> {check.status}
+                                      <strong>وضعیت:</strong> {check.status === "نزد ما" ? "دریافت شده (در جریان وصول)" : check.status}
                                     </div>
                                   </div>
                                 );
@@ -8383,12 +8353,11 @@ function Checks({
                                   <table className="roll-subtable">
                                     <thead>
                                       <tr>
-                                        <th style={{ width: "21%" }}>اطلاعات فاکتور</th>
-                                        <th style={{ width: "15%" }}>روزهای دیرکرد و درصد پله</th>
-                                        <th style={{ width: "16%" }}>هزینه دیرکرد</th>
-                                        <th style={{ width: "13%" }}>مانده چک</th>
-                                        <th style={{ width: "16%" }}>مانده فاکتور (خالص)</th>
-                                        <th className="print-private" style={{ width: "19%" }}>سود ظاهری و واقعی</th>
+                                        <th style={{ width: "26%" }}>اطلاعات فاکتور</th>
+                                        <th style={{ width: "18%" }}>روزهای دیرکرد و درصد پله</th>
+                                        <th style={{ width: "20%" }}>هزینه دیرکرد</th>
+                                        <th style={{ width: "16%" }}>مانده چک</th>
+                                        <th style={{ width: "20%" }}>مانده فاکتور (خالص)</th>
                                       </tr>
                                     </thead>
                                     <tbody>
@@ -8508,36 +8477,7 @@ function Checks({
                                                 </small>
                                               )}
                                             </td>
-                                            {/* ستون ششم : سود ظاهری و سود واقعی (مخفی در پرینت) */}
-                                            <td className="print-private">
-                                              {profitBreakdown && profitBreakdown.costBasisKnown ? (
-                                                <div>
-                                                  <div>
-                                                    <span style={{ color: "#0369a1", fontSize: "0.75rem" }}>ظاهری: </span>
-                                                    <strong>{formatMoney(profitBreakdown.apparentProfit, state.settings.currency)}</strong>
-                                                    <small style={{ color: "#555", marginRight: 4 }}>
-                                                      ({formatNumber(Number((profitBreakdown.apparentRate * 100).toFixed(1)))}٪)
-                                                    </small>
-                                                  </div>
-                                                  <div style={{ marginTop: 2 }}>
-                                                    <span style={{ color: "#15803d", fontSize: "0.75rem" }}>واقعی: </span>
-                                                    <strong>{formatMoney(profitBreakdown.effectiveProfit, state.settings.currency)}</strong>
-                                                    <small style={{ color: "#555", marginRight: 4 }}>
-                                                      ({formatNumber(Number((profitBreakdown.effectiveRate * 100).toFixed(1)))}٪)
-                                                    </small>
-                                                    {!profitBreakdown.isCollected && (
-                                                      <small style={{ display: "block", color: "#b45309", fontSize: "0.68rem" }}>
-                                                        (برآورد — در انتظار وصول)
-                                                      </small>
-                                                    )}
-                                                  </div>
-                                                </div>
-                                              ) : (
-                                                <span className="muted-cell" style={{ fontSize: "0.75rem" }}>
-                                                  بهای تمام‌شده ثبت‌نشده
-                                                </span>
-                                              )}
-                                            </td>
+
                                           </tr>
                                         );
                                       })}
@@ -9950,7 +9890,7 @@ function Reports({
           tone="violet"
         />
       </section>
-      <section className="panel table-panel effective-profit-report">
+      <section className="panel table-panel effective-profit-report print-private">
         <div className="panel-heading">
           <div>
             <span className="section-kicker">گزارش مستقل وصول</span>
@@ -9999,7 +9939,7 @@ function Reports({
           </table>
         </div>
       </section>
-      <div className="report-grid effective-profit-periods">
+      <div className="report-grid effective-profit-periods print-private">
         <div className="panel table-panel">
           <div className="panel-heading"><div><span className="section-kicker">تجمیع زمانی</span><h3>سود ماهانه</h3></div><span className="soft-tag">بر اساس تاریخ وصول</span></div>
           <div className="table-wrap"><table><thead><tr><th>ماه</th><th>تعداد تخصیص</th><th>وصول</th><th>هزینه دیرکرد</th><th>سود ظاهری</th><th>سود مؤثر</th></tr></thead><tbody>
