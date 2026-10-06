@@ -2510,6 +2510,139 @@ export function partyBalanceDescriptor(state: AppState, personId: string) {
     : { amount: Math.abs(net), label: "بدهی به طرف حساب", tone: "amount-positive" };
 }
 
+/**
+ * Calculates the total outstanding balance for a person based strictly on:
+ * Sum of remaining balance of unsettled (باز) invoices + net remaining balance of partially settled (تسویه جزئی) invoices.
+ * Excludes cancelled (باطل) and fully settled (تسویه شده) invoices.
+ */
+export function calculatePersonUnsettledInvoiceBalance(
+  invoices: Invoice[],
+  personId: string
+): {
+  amount: number;
+  unsettledAmount: number;
+  partialRemainingAmount: number;
+  unsettledCount: number;
+  partialCount: number;
+  label: string;
+} {
+  const personInvoices = invoices.filter(
+    inv => inv.partyId === personId && inv.status !== "باطل"
+  );
+
+  let unsettledAmount = 0;
+  let partialRemainingAmount = 0;
+  let unsettledCount = 0;
+  let partialCount = 0;
+
+  personInvoices.forEach(inv => {
+    if (inv.status === "تسویه شده") return;
+    const remaining = Math.max(0, inv.amount - (inv.paidAmount || 0));
+    if (remaining <= 0.01) return;
+
+    // Check if invoice is open / unsettled or partially settled
+    const isPartial = inv.status === "تسویه جزئی" || ((inv.paidAmount || 0) > 0 && (inv.paidAmount || 0) < inv.amount);
+    if (isPartial) {
+      partialCount++;
+      if (inv.type === "فروش") partialRemainingAmount += remaining;
+      else partialRemainingAmount -= remaining;
+    } else {
+      unsettledCount++;
+      if (inv.type === "فروش") unsettledAmount += remaining;
+      else unsettledAmount -= remaining;
+    }
+  });
+
+  const totalOutstanding = unsettledAmount + partialRemainingAmount;
+
+  let label = "تسویه کامل (بدون فاکتور پرداخت‌نشده)";
+  if (totalOutstanding > 0.01) {
+    label = "بدهکار به کارگاه";
+  } else if (totalOutstanding < -0.01) {
+    label = "بستانکار از کارگاه";
+  }
+
+  return {
+    amount: totalOutstanding,
+    unsettledAmount,
+    partialRemainingAmount,
+    unsettledCount,
+    partialCount,
+    label,
+  };
+}
+
+/**
+ * Formats product item quantity uniformly in dual units:
+ * Always: واحد اول (واحد دوم), e.g. "۱ کارتن (۳۶ عدد)"
+ */
+export function formatItemDualQuantity(
+  item: {
+    quantity: number;
+    unit: string;
+    quantityBase?: number;
+    conversionRate?: number;
+    baseUnit?: string;
+  },
+  product?: {
+    unit: string;
+    unit2?: string;
+    conversionRate?: number;
+  }
+): string {
+  const enteredQty = Number(item.quantity) || 0;
+  const rate = Number(item.conversionRate || product?.conversionRate) || 1;
+  const unit1 = product?.unit || item.baseUnit || item.unit || "عدد";
+  const unit2 = product?.unit2;
+
+  // Case 1: Product has distinct unit1 and unit2 with conversionRate > 1
+  if (unit1 && unit2 && unit1 !== unit2 && rate > 1) {
+    const packagingKeywords = ["کارتن", "بسته", "جعبه", "طاقه", "کیسه", "گونی", "بند", "شیرینگ", "پالت", "دست", "ست", "رول", "کیلوگرم", "تن"];
+    
+    // Determine which is packaging unit (larger) and which is base unit (smaller)
+    let packUnit = unit2;
+    let subUnit = unit1;
+
+    if (packagingKeywords.includes(unit1) && !packagingKeywords.includes(unit2)) {
+      packUnit = unit1;
+      subUnit = unit2;
+    } else if (packagingKeywords.includes(unit2)) {
+      packUnit = unit2;
+      subUnit = unit1;
+    }
+
+    let packQty = 0;
+    let subQty = 0;
+
+    if (item.unit === packUnit) {
+      packQty = enteredQty;
+      subQty = item.quantityBase !== undefined ? Number(item.quantityBase) : enteredQty * rate;
+    } else if (item.unit === subUnit) {
+      subQty = enteredQty;
+      packQty = Number((enteredQty / rate).toFixed(2));
+    } else {
+      if (item.quantityBase !== undefined) {
+        subQty = Number(item.quantityBase);
+        packQty = enteredQty;
+      } else {
+        packQty = enteredQty;
+        subQty = enteredQty * rate;
+      }
+    }
+
+    return `${formatNumber(packQty)} ${packUnit} (${formatNumber(subQty)} ${subUnit})`;
+  }
+
+  // Case 2: Item has recorded quantityBase and different baseUnit (free item)
+  if (item.quantityBase !== undefined && item.baseUnit && item.baseUnit !== item.unit) {
+    const baseQty = Number(item.quantityBase);
+    return `${formatNumber(enteredQty)} ${item.unit} (${formatNumber(baseQty)} ${item.baseUnit})`;
+  }
+
+  // Case 3: Default single unit
+  return `${formatNumber(enteredQty)} ${item.unit || unit1}`;
+}
+
 export interface EffectiveProfitBreakdown {
   collectionDate: string;
   isCollected?: boolean;

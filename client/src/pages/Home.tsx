@@ -107,6 +107,8 @@ import {
   appendPurchasePaymentCashEvents,
   releasePurchasePaymentsForInvoice,
   purchasePaymentIdsExclusiveToInvoice,
+  calculatePersonUnsettledInvoiceBalance,
+  formatItemDualQuantity,
   STORAGE_KEY,
 } from "@/lib/accounting";
 import {
@@ -2207,6 +2209,14 @@ function Invoices({
             <span>تعداد فاکتورها: {formatNumber(displayInvoices.length)} فقره</span>
             <span>مجموع مبلغ فاکتورها: {formatMoney(displayInvoices.reduce((sum, inv) => sum + inv.amount, 0), state.settings.currency)}</span>
             <span>مانده تسویه‌نشده: {formatMoney(displayInvoices.reduce((sum, inv) => sum + Math.max(0, inv.amount - (inv.paidAmount || 0)), 0), state.settings.currency)}</span>
+            {invoicePartyFilter !== "همه" && (() => {
+              const openBal = calculatePersonUnsettledInvoiceBalance(state.invoices, invoicePartyFilter);
+              return (
+                <span style={{ fontWeight: 800, color: openBal.amount > 0 ? "#b45309" : "#15803d" }}>
+                  وضعیت مانده کل شخص: {formatMoney(Math.abs(openBal.amount), state.settings.currency)} ({openBal.label})
+                </span>
+              );
+            })()}
           </div>
         </div>
         <div className="toolbar invoice-filters">
@@ -2315,17 +2325,17 @@ function Invoices({
           <table>
             <thead>
               <tr>
-                <th style={{ width: "8%" }}>شماره</th>
+                <th style={{ width: "10%" }}>شماره فاکتور</th>
                 <th style={{ width: "8%" }}>تاریخ</th>
                 <th style={{ width: "8%" }}>نوع و جهت</th>
                 <th style={{ width: "13%" }}>طرف حساب</th>
-                <th style={{ width: "14%" }}>نام کالا</th>
-                <th style={{ width: "6%" }}>تعداد</th>
-                <th style={{ width: "9%" }}>قیمت پایه</th>
+                <th style={{ width: "13%" }}>نام کالا</th>
+                <th style={{ width: "8%" }}>تعداد</th>
+                <th style={{ width: "8%" }}>قیمت پایه</th>
                 <th style={{ width: "10%" }}>مبلغ</th>
                 <th style={{ width: "8%" }}>تسویه</th>
                 <th style={{ width: "8%" }}>مانده</th>
-                <th style={{ width: "8%" }}>وضعیت</th>
+                <th style={{ width: "6%" }}>وضعیت</th>
               </tr>
             </thead>
             <tbody>
@@ -2353,33 +2363,35 @@ function Invoices({
                           }
                           title="برای مشاهده یا بستن چک‌های تخصیص‌یافته و جزئیات فاکتور کلیک کنید"
                         >
-                          <td>
-                            <button
-                              type="button"
-                              className={`allocation-toggle ${expanded ? "is-expanded" : ""}`}
-                              onClick={e => {
-                                e.stopPropagation();
-                                setExpandedInvoiceIds(current => {
-                                  const next = new Set(current);
-                                  if (next.has(invoice.id))
-                                    next.delete(invoice.id);
-                                  else next.add(invoice.id);
-                                  return next;
-                                });
-                              }}
-                              title="نمایش چک‌های تخصیص‌یافته و مشخصات مشتری"
-                            >
-                              <ChevronDown size={14} />
-                              <strong>{invoice.number}</strong>
-                            </button>
-                            {invGroup && (
-                              <small
-                                className="badge teal"
-                                style={{ display: "inline-block", marginTop: 2, marginRight: 4 }}
+                          <td data-invoice-num={invoice.number || ""}>
+                            <div className="doc-num-block">
+                              <button
+                                type="button"
+                                className={`allocation-toggle ${expanded ? "is-expanded" : ""}`}
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  setExpandedInvoiceIds(current => {
+                                    const next = new Set(current);
+                                    if (next.has(invoice.id))
+                                      next.delete(invoice.id);
+                                    else next.add(invoice.id);
+                                    return next;
+                                  });
+                                }}
+                                title="نمایش چک‌های تخصیص‌یافته و مشخصات مشتری"
                               >
-                                گروه: {invGroup.name}
-                              </small>
-                            )}
+                                <ChevronDown size={14} />
+                                <strong>فاکتور {invoice.number || "—"}</strong>
+                              </button>
+                              {invGroup && (
+                                <small
+                                  className="badge teal"
+                                  style={{ display: "inline-block", marginTop: 2, marginRight: 4 }}
+                                >
+                                  گروه: {invGroup.name}
+                                </small>
+                              )}
+                            </div>
                           </td>
                           <td>{formatDate(invoice.date)}</td>
                           <td>
@@ -2418,12 +2430,14 @@ function Invoices({
                           </td>
                           <td>
                             <div className="invoice-cell-list">
-                              {invoice.items.map((item, index) => (
-                                <span key={`${item.productId}-qty-${index}`}>
-                                  {formatNumber(Number(item.quantity) || 0)}{" "}
-                                  {item.unit}
-                                </span>
-                              ))}
+                              {invoice.items.map((item, index) => {
+                                const prod = state.products.find(p => p.id === item.productId);
+                                return (
+                                  <span key={`${item.productId}-qty-${index}`}>
+                                    <strong>{formatItemDualQuantity(item, prod)}</strong>
+                                  </span>
+                                );
+                              })}
                             </div>
                           </td>
                           <td>
@@ -2500,16 +2514,27 @@ function Invoices({
                                         {person?.type && (
                                           <div><strong>نقش طرف‌حساب:</strong> {person.type}</div>
                                         )}
-                                        {person && (
-                                          <div>
-                                            <strong>وضعیت مانده کل شخص:</strong>{" "}
-                                            <span style={{ fontWeight: 700, color: person.balance > 0 ? "#b45309" : person.balance < 0 ? "#15803d" : "#64748b" }}>
-                                              {Math.abs(person.balance) > 0.01
-                                                ? `${formatMoney(Math.abs(person.balance), state.settings.currency)} (${person.balance > 0 ? "بدهکار به کارگاه" : "بستانکار از کارگاه"})`
-                                                : "تسویه حساب"}
-                                            </span>
-                                          </div>
-                                        )}
+                                        {person && (() => {
+                                          const openBal = calculatePersonUnsettledInvoiceBalance(state.invoices, person.id);
+                                          const hasDue = Math.abs(openBal.amount) > 0.01;
+                                          return (
+                                            <div>
+                                              <strong>وضعیت مانده کل شخص:</strong>{" "}
+                                              <span style={{ fontWeight: 800, color: openBal.amount > 0 ? "#b45309" : openBal.amount < 0 ? "#15803d" : "#64748b" }}>
+                                                {hasDue
+                                                  ? `${formatMoney(Math.abs(openBal.amount), state.settings.currency)} (${openBal.label})`
+                                                  : "تسویه کامل (بدون فاکتور پرداخت‌نشده)"}
+                                              </span>
+                                              {hasDue && (
+                                                <small style={{ display: "inline-block", marginRight: 6, color: "#475569", fontWeight: 600 }}>
+                                                  {openBal.partialCount > 0
+                                                    ? `(شامل ${formatMoney(Math.abs(openBal.unsettledAmount), state.settings.currency)} فاکتورهای تسویه‌نشده + ${formatMoney(Math.abs(openBal.partialRemainingAmount), state.settings.currency)} مانده خالص تسویه جزئی)`
+                                                    : `(جمع باقیمانده کل فاکتورهای تسویه‌نشده)`}
+                                                </small>
+                                              )}
+                                            </div>
+                                          );
+                                        })()}
                                         {invGroup && (
                                           <div><span className="soft-tag">تخصیص گروهی: {invGroup.name}</span></div>
                                         )}
@@ -2537,7 +2562,7 @@ function Invoices({
                                             const product = state.products.find(p => p.id === item.productId);
                                             return (
                                               <span className="mini-item-badge" key={index}>
-                                                {product?.name || "کالا"} · {formatNumber(Number(item.quantity) || 0)} {item.unit || "عدد"} · فی: {formatMoney(Number(item.unitPrice) || 0, state.settings.currency)}
+                                                {product?.name || "کالا"} · {formatItemDualQuantity(item, product)} · فی: {formatMoney(Number(item.unitPrice) || 0, state.settings.currency)}
                                               </span>
                                             );
                                           })}
@@ -7881,6 +7906,14 @@ function Checks({
             <span>تاریخ گزارش: {todayJalali()}</span>
             <span>تعداد چک‌ها: {formatNumber(visibleChecks.length)} فقره</span>
             <span>مجموع مبلغ چک‌ها: {formatMoney(visibleChecks.reduce((sum, c) => sum + c.amount, 0), state.settings.currency)}</span>
+            {checkPartyFilter !== "همه" && (() => {
+              const openBal = calculatePersonUnsettledInvoiceBalance(state.invoices, checkPartyFilter);
+              return (
+                <span style={{ fontWeight: 800, color: openBal.amount > 0 ? "#b45309" : "#15803d" }}>
+                  وضعیت مانده کل شخص: {formatMoney(Math.abs(openBal.amount), state.settings.currency)} ({openBal.label})
+                </span>
+              );
+            })()}
           </div>
         </div>
         <div className="toolbar check-filters">
@@ -8034,12 +8067,12 @@ function Checks({
           <table>
             <thead>
               <tr>
-                <th style={{ width: "18%" }}>شماره چک</th>
+                <th style={{ width: "20%" }}>شماره چک و هدف فاکتور</th>
                 <th style={{ width: "22%" }}>طرف حساب</th>
-                <th style={{ width: "15%" }}>تاریخ دریافت</th>
-                <th style={{ width: "15%" }}>سررسید</th>
-                <th style={{ width: "15%" }}>مبلغ</th>
-                <th style={{ width: "15%" }}>وضعیت</th>
+                <th style={{ width: "14%" }}>تاریخ دریافت</th>
+                <th style={{ width: "14%" }}>سررسید</th>
+                <th style={{ width: "16%" }}>مبلغ</th>
+                <th style={{ width: "14%" }}>وضعیت</th>
                 <th className="print-private">مرجع وضعیت</th>
                 <th className="print-private">عملیات</th>
               </tr>
@@ -8066,41 +8099,61 @@ function Checks({
                         }
                         title="برای مشاهده یا بستن فاکتورهای تخصیص‌یافته کلیک کنید"
                       >
-                        <td>
-                          <button
-                            type="button"
-                            className={`allocation-toggle ${expanded ? "is-expanded" : ""}`}
-                            onClick={e => {
-                              e.stopPropagation();
-                              setExpandedCheckIds(current => {
-                                const next = new Set(current);
-                                if (next.has(check.id)) next.delete(check.id);
-                                else next.add(check.id);
-                                return next;
-                              });
-                            }}
-                            aria-expanded={expanded}
-                            title="نمایش فاکتورهای تخصیص‌یافته"
-                          >
-                            <ChevronDown size={14} />
-                            <strong>
-                              {check.number} ·{" "}
-                              {formatMoney(
-                                check.amount,
-                                state.settings.currency
-                              )}
-                            </strong>
-                          </button>
-                          {check.replacementOf && (
-                            <small className="muted-cell">
-                              جایگزین چک اصلی
-                            </small>
-                          )}
-                          {check.targetInvoiceId && (
-                            <small className="badge amber" style={{ display: "inline-block", marginTop: 2 }}>
-                              هدف: فاکتور {state.invoices.find(inv => inv.id === check.targetInvoiceId)?.number || "اختصاصی"}
-                            </small>
-                          )}
+                        <td data-check-num={check.number || ""}>
+                          <div className="doc-num-block">
+                            <button
+                              type="button"
+                              className={`allocation-toggle ${expanded ? "is-expanded" : ""}`}
+                              onClick={e => {
+                                e.stopPropagation();
+                                setExpandedCheckIds(current => {
+                                  const next = new Set(current);
+                                  if (next.has(check.id)) next.delete(check.id);
+                                  else next.add(check.id);
+                                  return next;
+                                });
+                              }}
+                              aria-expanded={expanded}
+                              title="نمایش فاکتورهای تخصیص‌یافته"
+                            >
+                              <ChevronDown size={14} />
+                              <strong>
+                                چک {check.number || "—"}
+                              </strong>
+                            </button>
+                            {check.replacementOf && (
+                              <small className="muted-cell" style={{ display: "block", fontSize: "0.72rem" }}>
+                                جایگزین چک اصلی
+                              </small>
+                            )}
+                            {(() => {
+                              if (check.targetInvoiceId) {
+                                const explicitInv = state.invoices.find(inv => inv.id === check.targetInvoiceId);
+                                return (
+                                  <small className="badge amber" style={{ display: "inline-block", marginTop: 2, fontWeight: 700 }}>
+                                    هدف: فاکتور {explicitInv?.number || "اختصاصی"}
+                                  </small>
+                                );
+                              }
+                              const targetInvoices = Array.from(new Set(
+                                checkAllocations
+                                  .map(a => state.invoices.find(inv => inv.id === a.invoiceId)?.number)
+                                  .filter(Boolean)
+                              ));
+                              if (targetInvoices.length > 0) {
+                                return (
+                                  <small className="badge amber" style={{ display: "inline-block", marginTop: 2, fontWeight: 700 }}>
+                                    هدف: فاکتور {targetInvoices.join("، ")}
+                                  </small>
+                                );
+                              }
+                              return (
+                                <small className="badge teal" style={{ display: "inline-block", marginTop: 2, fontWeight: 700 }}>
+                                  تخصیص عمومی (در جریان)
+                                </small>
+                              );
+                            })()}
+                          </div>
                         </td>
                         <td>
                           {check.partyId ? (
@@ -8316,22 +8369,43 @@ function Checks({
                                     {person?.phone && (
                                       <div><strong>شماره تماس:</strong> {person.phone}</div>
                                     )}
-                                    {person && (
-                                      <div>
-                                        <strong>وضعیت مانده کل شخص:</strong>{" "}
-                                        <span style={{ fontWeight: 700, color: person.balance > 0 ? "#b45309" : person.balance < 0 ? "#15803d" : "#64748b" }}>
-                                          {Math.abs(person.balance) > 0.01
-                                            ? `${formatMoney(Math.abs(person.balance), state.settings.currency)} (${person.balance > 0 ? "بدهکار" : "بستانکار"})`
-                                            : "تسویه"}
-                                        </span>
-                                      </div>
-                                    )}
+                                    {person && (() => {
+                                      const openBal = calculatePersonUnsettledInvoiceBalance(state.invoices, person.id);
+                                      const hasDue = Math.abs(openBal.amount) > 0.01;
+                                      return (
+                                        <div>
+                                          <strong>وضعیت مانده کل شخص:</strong>{" "}
+                                          <span style={{ fontWeight: 800, color: openBal.amount > 0 ? "#b45309" : openBal.amount < 0 ? "#15803d" : "#64748b" }}>
+                                            {hasDue
+                                              ? `${formatMoney(Math.abs(openBal.amount), state.settings.currency)} (${openBal.label})`
+                                              : "تسویه کامل (بدون فاکتور پرداخت‌نشده)"}
+                                          </span>
+                                          {hasDue && (
+                                            <small style={{ display: "inline-block", marginRight: 6, color: "#475569", fontWeight: 600 }}>
+                                              {openBal.partialCount > 0
+                                                ? `(شامل ${formatMoney(Math.abs(openBal.unsettledAmount), state.settings.currency)} فاکتورهای تسویه‌نشده + ${formatMoney(Math.abs(openBal.partialRemainingAmount), state.settings.currency)} مانده خالص تسویه جزئی)`
+                                                : `(جمع باقیمانده کل فاکتورهای تسویه‌نشده)`}
+                                            </small>
+                                          )}
+                                        </div>
+                                      );
+                                    })()}
                                     {check.bank && (
-                                      <div><strong>بانک:</strong> {check.bank}</div>
+                                      <div><strong>بانک صادرکننده:</strong> {check.bank}</div>
                                     )}
                                     {checkGroup && (
                                       <div><span className="soft-tag">تخصیص گروهی: {checkGroup.name}</span></div>
                                     )}
+                                    <div>
+                                      <strong>هدف فاکتور:</strong>{" "}
+                                      {check.targetInvoiceId ? (
+                                        <span className="badge amber">
+                                          فاکتور {state.invoices.find(i => i.id === check.targetInvoiceId)?.number || "اختصاصی"}
+                                        </span>
+                                      ) : (
+                                        <span className="muted-cell">تخصیص عمومی (FIFO)</span>
+                                      )}
+                                    </div>
                                     <div>
                                       <strong>مبلغ چک:</strong> {formatMoney(check.amount, state.settings.currency)}
                                     </div>

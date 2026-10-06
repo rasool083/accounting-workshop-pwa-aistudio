@@ -149,7 +149,26 @@ export function purgeProfitAndPrivateColumns(clonedDoc: Document, clonedElement:
  * 3. Extracts accordion rows from multi-column table colSpan into full-width atomic blocks so nothing overlaps.
  */
 export function transformAccordionTables(clonedDoc: Document, clonedElement: HTMLElement) {
-  // First, completely purge any internal profit or private elements
+  // First, unwrap all non-action buttons (like invoice number, check number, person names)
+  clonedElement.querySelectorAll("button").forEach(btn => {
+    if (
+      btn.classList.contains("row-action") ||
+      btn.classList.contains("icon-button") ||
+      btn.getAttribute("title")?.includes("ویرایش") ||
+      btn.getAttribute("title")?.includes("حذف") ||
+      btn.getAttribute("title")?.includes("تاریخچه")
+    ) {
+      btn.remove();
+      return;
+    }
+    const span = clonedDoc.createElement("span");
+    span.innerHTML = btn.innerHTML;
+    span.querySelectorAll("svg").forEach(svg => svg.remove());
+    span.style.cssText = "display: inline-block; font-weight: 800; color: #000000;";
+    btn.parentNode?.replaceChild(span, btn);
+  });
+
+  // Second, completely purge any internal profit or private elements
   purgeProfitAndPrivateColumns(clonedDoc, clonedElement);
 
   const tables = Array.from(clonedElement.querySelectorAll("table"));
@@ -308,6 +327,20 @@ export function transformAccordionTables(clonedDoc: Document, clonedElement: HTM
           ${colDef && colDef.width ? `width: ${colDef.width};` : ""}
         `;
       });
+
+      // Ensure first column (invoice number or check number) is always preserved and populated
+      if (tds[0]) {
+        const firstCell = tds[0] as HTMLElement;
+        const invoiceNum = row.getAttribute("data-invoice-num");
+        const checkNum = row.getAttribute("data-check-num");
+
+        const currentText = firstCell.textContent?.trim() || "";
+        if (invoiceNum && (!currentText || currentText === "فاکتور")) {
+          firstCell.innerHTML = `<span style="font-weight: 800; color: #000000; font-size: 11.5px;">فاکتور ${invoiceNum}</span>`;
+        } else if (checkNum && (!currentText || currentText === "چک")) {
+          firstCell.innerHTML = `<span style="font-weight: 800; color: #000000; font-size: 11.5px;">چک ${checkNum}</span>`;
+        }
+      }
 
       const rowTbody = clonedDoc.createElement("tbody");
       rowTbody.appendChild(clonedTr);
@@ -504,8 +537,18 @@ export function buildVectorHtmlDocument(
   transformAccordionTables(document, container);
   purgeProfitAndPrivateColumns(document, container);
 
-  // Preserve text inside text-buttons
-  container.querySelectorAll("button.text-button, .text-button").forEach(btn => {
+  // Preserve text inside all non-action buttons (like invoice number, check number, person names)
+  container.querySelectorAll("button").forEach(btn => {
+    if (
+      btn.classList.contains("row-action") ||
+      btn.classList.contains("icon-button") ||
+      btn.getAttribute("title")?.includes("ویرایش") ||
+      btn.getAttribute("title")?.includes("حذف") ||
+      btn.getAttribute("title")?.includes("تاریخچه")
+    ) {
+      btn.remove();
+      return;
+    }
     const span = document.createElement("span");
     span.innerHTML = btn.innerHTML;
     span.style.fontWeight = "800";
@@ -592,7 +635,55 @@ export function buildVectorHtmlDocument(
       font-weight: 800;
       color: #000000;
     }
-    .print-private, .row-action, .icon-button, button, .no-print {
+    .badge {
+      display: inline-block !important;
+      padding: 2px 7px !important;
+      border-radius: 4px !important;
+      font-size: 10px !important;
+      font-weight: 700 !important;
+      white-space: nowrap !important;
+    }
+    .badge.amber {
+      background: #fef3c7 !important;
+      color: #92400e !important;
+      border: 1px solid #fde68a !important;
+    }
+    .badge.teal {
+      background: #ccfbf1 !important;
+      color: #115e59 !important;
+      border: 1px solid #99f6e4 !important;
+    }
+    .muted-cell {
+      color: #64748b !important;
+      font-size: 0.75rem !important;
+    }
+    .invoice-cell-list {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .mini-item-badge {
+      display: inline-block !important;
+      background: #f1f5f9 !important;
+      border: 1px solid #cbd5e1 !important;
+      border-radius: 4px !important;
+      padding: 3px 8px !important;
+      font-size: 11px !important;
+      font-weight: 700 !important;
+      color: #000000 !important;
+      margin: 2px 4px 2px 0 !important;
+    }
+    button {
+      background: transparent !important;
+      border: none !important;
+      padding: 0 !important;
+      color: #000000 !important;
+      font-weight: 800 !important;
+      font-size: inherit !important;
+      font-family: inherit !important;
+      text-align: right !important;
+    }
+    .print-private, .row-action, .icon-button, button.icon-button, .no-print {
       display: none !important;
     }
     .print-roll-banner {
