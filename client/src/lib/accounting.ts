@@ -2517,7 +2517,8 @@ export function partyBalanceDescriptor(state: AppState, personId: string) {
  */
 export function calculatePersonUnsettledInvoiceBalance(
   invoices: Invoice[],
-  personId: string
+  personId: string,
+  checks?: Check[]
 ): {
   amount: number;
   unsettledAmount: number;
@@ -2536,12 +2537,26 @@ export function calculatePersonUnsettledInvoiceBalance(
   let partialCount = 0;
 
   personInvoices.forEach(inv => {
-    if (inv.status === "تسویه شده") return;
-    const remaining = Math.max(0, inv.amount - (inv.paidAmount || 0));
+    // If checks list is provided, verify whether allocations are genuinely collected
+    let effectivePaid = inv.paidAmount || 0;
+    if (checks && Array.isArray(inv.allocations) && inv.allocations.length > 0) {
+      let clearedAllocationsSum = 0;
+      inv.allocations.forEach(alloc => {
+        const c = checks.find(item => item.id === alloc.checkId);
+        // In Iranian accounting, an allocation only converts to actual paid funds when cleared/collected
+        if (c && c.status === "وصول شده") {
+          clearedAllocationsSum += (alloc.principalAmount ?? alloc.amount);
+        }
+      });
+      // The actual collected payment is what cleared; uncollected ("نزد ما") or bounced ("برگشتی") checks remain debt
+      effectivePaid = clearedAllocationsSum;
+    }
+
+    const remaining = Math.max(0, inv.amount - effectivePaid);
     if (remaining <= 0.01) return;
 
     // Check if invoice is open / unsettled or partially settled
-    const isPartial = inv.status === "تسویه جزئی" || ((inv.paidAmount || 0) > 0 && (inv.paidAmount || 0) < inv.amount);
+    const isPartial = effectivePaid > 0 && remaining > 0.01;
     if (isPartial) {
       partialCount++;
       if (inv.type === "فروش") partialRemainingAmount += remaining;
@@ -2553,7 +2568,20 @@ export function calculatePersonUnsettledInvoiceBalance(
     }
   });
 
-  const totalOutstanding = unsettledAmount + partialRemainingAmount;
+  let totalOutstanding = unsettledAmount + partialRemainingAmount;
+
+  // Also check if the person has any bounced checks ("برگشتی") that add to debt
+  if (checks) {
+    const bouncedChecks = checks.filter(
+      c => c.partyId === personId && c.status === "برگشتی"
+    );
+    const bouncedTotal = bouncedChecks.reduce((sum, c) => sum + c.amount, 0);
+    if (bouncedTotal > 0 && totalOutstanding <= 0.01) {
+      totalOutstanding += bouncedTotal;
+      unsettledAmount += bouncedTotal;
+      unsettledCount += bouncedChecks.length;
+    }
+  }
 
   let label = "تسویه کامل (بدون فاکتور پرداخت‌نشده)";
   if (totalOutstanding > 0.01) {
@@ -2666,8 +2694,8 @@ export function calculateEffectiveProfitForAllocation(
   allocation: Pick<FIFOSettlement, "amount" | "principalAmount"> | CheckAllocation,
   check?: Check
 ): EffectiveProfitBreakdown | null {
-  const isCollected = check?.status === "وصول شده" && Boolean(check?.collectedDate);
-  const collectionDate = check?.collectedDate || (isCollected ? check?.dueDate : undefined);
+  const isCollected = check?.status === "وصول شده";
+  const collectionDate = check?.collectedDate || (isCollected ? (check?.dueDate || todayJalali()) : undefined);
   const targetDate = collectionDate || todayJalali();
   const principalAmount = allocation.principalAmount ?? allocation.amount;
   const ratio = invoice.amount > 0

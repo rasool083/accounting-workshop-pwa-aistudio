@@ -87,18 +87,60 @@ export function purgeProfitAndPrivateColumns(clonedDoc: Document, clonedElement:
 
   // 3. Replace <select> dropdowns with clean, customer-sanitized text badges
   clonedElement.querySelectorAll("select").forEach(sel => {
-    const selectedOption = sel.options[sel.selectedIndex];
-    let selectedText = selectedOption ? selectedOption.text : sel.value;
+    const selectedVal =
+      sel.getAttribute("data-selected-text") ||
+      sel.getAttribute("data-selected-value") ||
+      sel.getAttribute("data-check-status") ||
+      (sel.options && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex]?.text : null) ||
+      sel.value;
 
-    // Customer-friendly status replacement
-    if (selectedText === "نزد ما") {
-      selectedText = "در جریان وصول";
-    } else if (selectedText === "خرج شده") {
-      selectedText = "واگذار شده";
-    } else if (selectedText.includes("حساب مرجع") || selectedText.includes("انتخاب شخص")) {
+    let selectedText = selectedVal || "";
+
+    if (selectedText.includes("حساب مرجع") || selectedText.includes("انتخاب شخص")) {
       // Internal deposit target or internal holder -> strip completely
       sel.remove();
       return;
+    }
+
+    let badgeBg = "#f1f5f9";
+    let badgeColor = "#000000";
+    let badgeBorder = "#cbd5e1";
+
+    if (selectedText === "وصول شده") {
+      selectedText = "وصول شده";
+      badgeBg = "#dcfce7";
+      badgeColor = "#15803d";
+      badgeBorder = "#86efac";
+    } else if (selectedText === "نزد ما" || selectedText === "در جریان وصول") {
+      selectedText = "در جریان وصول";
+      badgeBg = "#fef3c7";
+      badgeColor = "#b45309";
+      badgeBorder = "#fde68a";
+    } else if (selectedText === "برگشتی") {
+      selectedText = "برگشتی";
+      badgeBg = "#fee2e2";
+      badgeColor = "#b91c1c";
+      badgeBorder = "#fca5a5";
+    } else if (selectedText === "خرج شده" || selectedText === "واگذار شده") {
+      selectedText = "واگذار شده";
+      badgeBg = "#f3e8ff";
+      badgeColor = "#6b21a8";
+      badgeBorder = "#d8b4fe";
+    } else if (selectedText === "عودت داده شده" || selectedText === "عودت") {
+      selectedText = "عودت داده شده";
+      badgeBg = "#f1f5f9";
+      badgeColor = "#475569";
+      badgeBorder = "#cbd5e1";
+    } else if (selectedText === "جایگزین شده" || selectedText === "جایگزین") {
+      selectedText = "جایگزین شده";
+      badgeBg = "#f1f5f9";
+      badgeColor = "#475569";
+      badgeBorder = "#cbd5e1";
+    } else if (selectedText === "باطل") {
+      selectedText = "باطل";
+      badgeBg = "#fee2e2";
+      badgeColor = "#991b1b";
+      badgeBorder = "#fca5a5";
     }
 
     const span = clonedDoc.createElement("span");
@@ -109,9 +151,9 @@ export function purgeProfitAndPrivateColumns(clonedDoc: Document, clonedElement:
       border-radius: 4px;
       font-size: 11px;
       font-weight: 800;
-      background: #f1f5f9;
-      color: #000000;
-      border: 1px solid #cbd5e1;
+      background: ${badgeBg};
+      color: ${badgeColor};
+      border: 1px solid ${badgeBorder};
       white-space: nowrap;
     `;
     sel.parentNode?.replaceChild(span, sel);
@@ -177,12 +219,20 @@ export function transformAccordionTables(clonedDoc: Document, clonedElement: HTM
     const detailRows = Array.from(table.querySelectorAll(".allocation-detail-row"));
     if (detailRows.length === 0) return;
 
+    // Check if the report is filtered by a specific party:
+    const bannerTitle =
+      clonedElement.querySelector(".print-roll-title strong")?.textContent ||
+      clonedDoc.querySelector(".print-roll-title strong")?.textContent ||
+      "";
+    const isPartyFiltered = bannerTitle.includes("طرف حساب:") && !bannerTitle.includes("کلیه");
+
     // Get sanitized thead headers
     const thead = table.querySelector("thead");
     const headerCols: Array<{ text: string; width: string }> = [];
+    let partyColOriginalIndex = -1;
     if (thead) {
       const ths = Array.from(thead.querySelectorAll("th"));
-      ths.forEach(th => {
+      ths.forEach((th, idx) => {
         const text = th.textContent?.trim() || "";
         if (
           th.classList.contains("print-private") ||
@@ -195,6 +245,20 @@ export function transformAccordionTables(clonedDoc: Document, clonedElement: HTM
         ) {
           return;
         }
+
+        const isParty =
+          th.classList.contains("col-party") ||
+          text.includes("طرف حساب") ||
+          text.includes("مشتری");
+        if (isParty) {
+          partyColOriginalIndex = idx;
+          if (isPartyFiltered) {
+            // When printing with a specified party, it is already shown in the top header banner;
+            // it should NOT be repeated in every row.
+            return;
+          }
+        }
+
         const w = (th as HTMLElement).style.width || "";
         headerCols.push({ text, width: w });
       });
@@ -304,10 +368,75 @@ export function transformAccordionTables(clonedDoc: Document, clonedElement: HTM
         )
         .forEach(el => el.remove());
 
-      // Sanitize text within cells (e.g. replace internal "نزد ما" with "در جریان وصول")
+      // If a specific party is filtered and shown in top banner, remove the party column from rows
+      if (isPartyFiltered) {
+        const partyCell = clonedTr.querySelector(".col-party") as HTMLElement | null;
+        if (partyCell) {
+          partyCell.remove();
+        } else if (partyColOriginalIndex >= 0) {
+          const allTds = Array.from(clonedTr.querySelectorAll("td"));
+          if (allTds[partyColOriginalIndex]) allTds[partyColOriginalIndex].remove();
+        }
+      }
+
+      // Sanitize status cells and text within cells
       clonedTr.querySelectorAll("td").forEach(td => {
-        if (td.textContent?.trim() === "نزد ما") {
-          td.textContent = "در جریان وصول";
+        const sel = td.querySelector("select");
+        if (sel) {
+          const selectedVal =
+            sel.getAttribute("data-selected-text") ||
+            sel.getAttribute("data-selected-value") ||
+            sel.getAttribute("data-check-status") ||
+            td.getAttribute("data-check-status") ||
+            row.getAttribute("data-check-status") ||
+            (sel.options && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex]?.text : null) ||
+            sel.value;
+
+          let badgeText = selectedVal || "";
+          let badgeBg = "#f1f5f9";
+          let badgeColor = "#000000";
+          let badgeBorder = "#cbd5e1";
+
+          if (badgeText === "وصول شده") {
+            badgeText = "وصول شده";
+            badgeBg = "#dcfce7";
+            badgeColor = "#15803d";
+            badgeBorder = "#86efac";
+          } else if (badgeText === "نزد ما" || badgeText === "در جریان وصول") {
+            badgeText = "در جریان وصول";
+            badgeBg = "#fef3c7";
+            badgeColor = "#b45309";
+            badgeBorder = "#fde68a";
+          } else if (badgeText === "برگشتی") {
+            badgeText = "برگشتی";
+            badgeBg = "#fee2e2";
+            badgeColor = "#b91c1c";
+            badgeBorder = "#fca5a5";
+          } else if (badgeText === "خرج شده" || badgeText === "واگذار شده") {
+            badgeText = "واگذار شده";
+            badgeBg = "#f3e8ff";
+            badgeColor = "#6b21a8";
+            badgeBorder = "#d8b4fe";
+          } else if (badgeText === "عودت داده شده" || badgeText === "عودت") {
+            badgeText = "عودت داده شده";
+            badgeBg = "#f1f5f9";
+            badgeColor = "#475569";
+            badgeBorder = "#cbd5e1";
+          } else if (badgeText === "جایگزین شده" || badgeText === "جایگزین") {
+            badgeText = "جایگزین شده";
+            badgeBg = "#f1f5f9";
+            badgeColor = "#475569";
+            badgeBorder = "#cbd5e1";
+          } else if (badgeText === "باطل") {
+            badgeText = "باطل";
+            badgeBg = "#fee2e2";
+            badgeColor = "#991b1b";
+            badgeBorder = "#fca5a5";
+          }
+
+          td.innerHTML = `<span style="display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 800; background: ${badgeBg}; color: ${badgeColor}; border: 1px solid ${badgeBorder}; white-space: nowrap;">${badgeText}</span>`;
+        } else if (td.textContent?.trim() === "نزد ما") {
+          td.innerHTML = `<span style="display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 800; background: #fef3c7; color: #b45309; border: 1px solid #fde68a; white-space: nowrap;">در جریان وصول</span>`;
         }
       });
 
@@ -331,14 +460,26 @@ export function transformAccordionTables(clonedDoc: Document, clonedElement: HTM
       // Ensure first column (invoice number or check number) is always preserved and populated
       if (tds[0]) {
         const firstCell = tds[0] as HTMLElement;
-        const invoiceNum = row.getAttribute("data-invoice-num");
-        const checkNum = row.getAttribute("data-check-num");
+        const invoiceNum =
+          row.getAttribute("data-invoice-num") ||
+          firstCell.getAttribute("data-invoice-num") ||
+          firstCell.querySelector("[data-invoice-num]")?.getAttribute("data-invoice-num");
+        const checkNum =
+          row.getAttribute("data-check-num") ||
+          firstCell.getAttribute("data-check-num") ||
+          firstCell.querySelector("[data-check-num]")?.getAttribute("data-check-num");
 
-        const currentText = firstCell.textContent?.trim() || "";
-        if (invoiceNum && (!currentText || currentText === "فاکتور")) {
-          firstCell.innerHTML = `<span style="font-weight: 800; color: #000000; font-size: 11.5px;">فاکتور ${invoiceNum}</span>`;
-        } else if (checkNum && (!currentText || currentText === "چک")) {
-          firstCell.innerHTML = `<span style="font-weight: 800; color: #000000; font-size: 11.5px;">چک ${checkNum}</span>`;
+        if (invoiceNum) {
+          firstCell.innerHTML = `<span style="display: block; font-weight: 800; color: #000000; font-size: 12px;">شماره فاکتور: ${invoiceNum}</span>`;
+        } else if (checkNum) {
+          const targetBadge = firstCell.querySelector(".badge, small");
+          const targetHtml = targetBadge ? targetBadge.outerHTML : "";
+          firstCell.innerHTML = `
+            <div style="display: flex; flex-direction: column; gap: 3px;">
+              <span style="font-weight: 800; color: #000000; font-size: 12px;">شماره چک: ${checkNum}</span>
+              ${targetHtml ? `<div>${targetHtml}</div>` : ""}
+            </div>
+          `;
         }
       }
 
@@ -531,6 +672,16 @@ export function buildVectorHtmlDocument(
   options: PDFExportOptions = {}
 ): { html: string; containerHeightPx: number } {
   const { title = "گزارش مالی کارگاه", singleRoll = true } = options;
+
+  // Mark all live selects with their actual current value and text before cloneNode
+  element.querySelectorAll("select").forEach(sel => {
+    sel.setAttribute("data-selected-value", sel.value);
+    const text =
+      sel.options && sel.selectedIndex >= 0
+        ? sel.options[sel.selectedIndex]?.text
+        : sel.value;
+    sel.setAttribute("data-selected-text", text);
+  });
 
   // Clone element and apply transformations in memory
   const container = element.cloneNode(true) as HTMLElement;

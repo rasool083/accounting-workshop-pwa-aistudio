@@ -280,4 +280,129 @@ describe("pdfScrollExport module", () => {
     expect(doc.html).toContain("هدف: فاکتور 101");
     expect(doc.html).toContain("حسین محمدی");
   });
+
+  it("accurately maintains 'وصول شده' status badge and does not corrupt it to 'در جریان وصول'", () => {
+    const el = document.createElement("div");
+    el.innerHTML = `
+      <div id="checks-printable-area">
+        <table>
+          <thead>
+            <tr>
+              <th>شماره چک و هدف فاکتور</th>
+              <th>طرف حساب</th>
+              <th>وضعیت</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr data-check-num="555" data-check-status="وصول شده">
+              <td data-check-num="555">
+                <button type="button" class="allocation-toggle">
+                  <strong>شماره چک: 555</strong>
+                </button>
+              </td>
+              <td>احمدی</td>
+              <td data-check-status="وصول شده">
+                <select data-selected-value="وصول شده">
+                  <option value="نزد ما">نزد ما</option>
+                  <option value="وصول شده" selected>وصول شده</option>
+                </select>
+              </td>
+            </tr>
+            <tr class="allocation-detail-row">
+              <td colspan="3"><div class="check-accordion-box">جزئیات</div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    `;
+    const doc = buildVectorHtmlDocument(el, { title: "تست وصول" });
+    expect(doc.html).toContain("وصول شده");
+    expect(doc.html).toContain("شماره چک: 555");
+  });
+
+  it("omits the party column from rows when filtered by a specific party in banner", () => {
+    const el = document.createElement("div");
+    el.innerHTML = `
+      <div id="invoices-printable-area">
+        <div class="print-roll-banner">
+          <div class="print-roll-title">
+            <span>گزارش فاکتورها</span>
+            <strong>طرف حساب: علی رضایی</strong>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>شماره فاکتور</th>
+              <th class="col-party">طرف حساب</th>
+              <th>مبلغ</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr data-invoice-num="200">
+              <td data-invoice-num="200">
+                <button type="button"><strong>شماره فاکتور: 200</strong></button>
+              </td>
+              <td class="col-party">علی رضایی</td>
+              <td>1,000,000</td>
+            </tr>
+            <tr class="allocation-detail-row">
+              <td colspan="3"><div class="invoice-accordion-box">جزئیات</div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    `;
+    const doc = buildVectorHtmlDocument(el, { title: "تست فیلتر طرف حساب" });
+    // Header banner preserves party name
+    expect(doc.html).toContain("طرف حساب: علی رضایی");
+    // Table master header should not contain the party column
+    expect(doc.html).not.toContain('<th style="padding: 8px 6px; font-size: 11px; font-weight: 800; color: rgb(255, 255, 255); text-align: right; border: 1px solid rgb(19, 78, 74);">طرف حساب</th>');
+  });
+
+  it("calculatePersonUnsettledInvoiceBalance correctly detects debt when checks are uncleared or bounced", () => {
+    const invoices: any[] = [
+      {
+        id: "inv-1",
+        number: "101",
+        type: "فروش",
+        date: "1405/01/01",
+        partyId: "person-1",
+        amount: 10_000_000,
+        paidAmount: 10_000_000,
+        status: "تسویه شده",
+        allocations: [{ checkId: "chk-uncleared", amount: 10_000_000, principalAmount: 10_000_000 }],
+        items: [],
+      },
+    ];
+    // Check is NOT collected yet (نزد ما)
+    const unclearedChecks: any[] = [
+      {
+        id: "chk-uncleared",
+        number: "999",
+        partyId: "person-1",
+        amount: 10_000_000,
+        status: "نزد ما",
+      },
+    ];
+
+    const result = calculatePersonUnsettledInvoiceBalance(invoices, "person-1", unclearedChecks);
+    // Since the check has not cleared yet, the person is still indebted to the workshop!
+    expect(result.amount).toBe(10_000_000);
+    expect(result.label).toBe("بدهکار به کارگاه");
+
+    // When check is collected:
+    const clearedChecks: any[] = [
+      {
+        id: "chk-uncleared",
+        number: "999",
+        partyId: "person-1",
+        amount: 10_000_000,
+        status: "وصول شده",
+      },
+    ];
+    const clearedResult = calculatePersonUnsettledInvoiceBalance(invoices, "person-1", clearedChecks);
+    expect(clearedResult.amount).toBe(0);
+    expect(clearedResult.label).toBe("تسویه کامل (بدون فاکتور پرداخت‌نشده)");
+  });
 });

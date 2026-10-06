@@ -2210,7 +2210,7 @@ function Invoices({
             <span>مجموع مبلغ فاکتورها: {formatMoney(displayInvoices.reduce((sum, inv) => sum + inv.amount, 0), state.settings.currency)}</span>
             <span>مانده تسویه‌نشده: {formatMoney(displayInvoices.reduce((sum, inv) => sum + Math.max(0, inv.amount - (inv.paidAmount || 0)), 0), state.settings.currency)}</span>
             {invoicePartyFilter !== "همه" && (() => {
-              const openBal = calculatePersonUnsettledInvoiceBalance(state.invoices, invoicePartyFilter);
+              const openBal = calculatePersonUnsettledInvoiceBalance(state.invoices, invoicePartyFilter, state.checks);
               return (
                 <span style={{ fontWeight: 800, color: openBal.amount > 0 ? "#b45309" : "#15803d" }}>
                   وضعیت مانده کل شخص: {formatMoney(Math.abs(openBal.amount), state.settings.currency)} ({openBal.label})
@@ -2328,7 +2328,7 @@ function Invoices({
                 <th style={{ width: "10%" }}>شماره فاکتور</th>
                 <th style={{ width: "8%" }}>تاریخ</th>
                 <th style={{ width: "8%" }}>نوع و جهت</th>
-                <th style={{ width: "13%" }}>طرف حساب</th>
+                <th style={{ width: "13%" }} className="col-party">طرف حساب</th>
                 <th style={{ width: "13%" }}>نام کالا</th>
                 <th style={{ width: "8%" }}>تعداد</th>
                 <th style={{ width: "8%" }}>قیمت پایه</th>
@@ -2351,7 +2351,8 @@ function Invoices({
                     return (
                       <Fragment key={invoice.id}>
                         <tr
-                          className="clickable-row"
+                          className="clickable-row invoice-row"
+                          data-invoice-num={invoice.number || ""}
                           onClick={() =>
                             setExpandedInvoiceIds(current => {
                               const next = new Set(current);
@@ -2381,7 +2382,7 @@ function Invoices({
                                 title="نمایش چک‌های تخصیص‌یافته و مشخصات مشتری"
                               >
                                 <ChevronDown size={14} />
-                                <strong>فاکتور {invoice.number || "—"}</strong>
+                                <strong>شماره فاکتور: {invoice.number || "—"}</strong>
                               </button>
                               {invGroup && (
                                 <small
@@ -2399,7 +2400,7 @@ function Invoices({
                               {invoiceDirectionLabel(invoice.type)}
                             </span>
                           </td>
-                          <td>
+                          <td className="col-party">
                             {invoice.partyId ? (
                               <button
                                 type="button"
@@ -2515,7 +2516,7 @@ function Invoices({
                                           <div><strong>نقش طرف‌حساب:</strong> {person.type}</div>
                                         )}
                                         {person && (() => {
-                                          const openBal = calculatePersonUnsettledInvoiceBalance(state.invoices, person.id);
+                                          const openBal = calculatePersonUnsettledInvoiceBalance(state.invoices, person.id, state.checks);
                                           const hasDue = Math.abs(openBal.amount) > 0.01;
                                           return (
                                             <div>
@@ -7607,17 +7608,16 @@ function Checks({
     status: CheckStatus,
     targetId: string
   ) {
-    if (["نزد ما", "وصول شده", "برگشتی"].includes(status) && !targetId) {
-      window.alert(
-        "برای این وضعیت، ابتدا حساب بانکی مرجع را از ستون بعدی یا فرم ویرایش انتخاب کنید."
-      );
-      return;
-    }
+    const defaultBank =
+      state.accounts.find(account => account.type === "بانک")?.id ||
+      state.accounts[0]?.id ||
+      "";
+    const effectiveTargetId = targetId || check.bankAccountId || defaultBank;
     const accountId = ["نزد ما", "وصول شده", "برگشتی"].includes(status)
-      ? targetId
+      ? effectiveTargetId
       : check.bankAccountId;
     const returnPartyId = ["عودت داده شده", "خرج شده"].includes(status)
-      ? targetId
+      ? targetId || check.returnPartyId
       : check.returnPartyId;
     let accounts = state.accounts.map(account =>
       account.id === check.bankAccountId && check.status === "وصول شده"
@@ -7907,7 +7907,7 @@ function Checks({
             <span>تعداد چک‌ها: {formatNumber(visibleChecks.length)} فقره</span>
             <span>مجموع مبلغ چک‌ها: {formatMoney(visibleChecks.reduce((sum, c) => sum + c.amount, 0), state.settings.currency)}</span>
             {checkPartyFilter !== "همه" && (() => {
-              const openBal = calculatePersonUnsettledInvoiceBalance(state.invoices, checkPartyFilter);
+              const openBal = calculatePersonUnsettledInvoiceBalance(state.invoices, checkPartyFilter, state.checks);
               return (
                 <span style={{ fontWeight: 800, color: openBal.amount > 0 ? "#b45309" : "#15803d" }}>
                   وضعیت مانده کل شخص: {formatMoney(Math.abs(openBal.amount), state.settings.currency)} ({openBal.label})
@@ -8068,7 +8068,7 @@ function Checks({
             <thead>
               <tr>
                 <th style={{ width: "20%" }}>شماره چک و هدف فاکتور</th>
-                <th style={{ width: "22%" }}>طرف حساب</th>
+                <th style={{ width: "22%" }} className="col-party">طرف حساب</th>
                 <th style={{ width: "14%" }}>تاریخ دریافت</th>
                 <th style={{ width: "14%" }}>سررسید</th>
                 <th style={{ width: "16%" }}>مبلغ</th>
@@ -8088,6 +8088,8 @@ function Checks({
                     <Fragment key={check.id}>
                       <tr
                         key={check.id}
+                        data-check-num={check.number || ""}
+                        data-check-status={check.status}
                         className={`check-row check-row-${check.status === "وصول شده" ? "cleared" : check.status === "خرج شده" ? "spent" : ["برگشتی", "عودت داده شده", "باطل"].includes(check.status) ? "bad" : check.status === "جایگزین شده" ? "replaced" : "open"} clickable-row`}
                         onClick={() =>
                           setExpandedCheckIds(current => {
@@ -8099,7 +8101,7 @@ function Checks({
                         }
                         title="برای مشاهده یا بستن فاکتورهای تخصیص‌یافته کلیک کنید"
                       >
-                        <td data-check-num={check.number || ""}>
+                        <td data-check-num={check.number || ""} data-check-status={check.status}>
                           <div className="doc-num-block">
                             <button
                               type="button"
@@ -8118,7 +8120,7 @@ function Checks({
                             >
                               <ChevronDown size={14} />
                               <strong>
-                                چک {check.number || "—"}
+                                شماره چک: {check.number || "—"}
                               </strong>
                             </button>
                             {check.replacementOf && (
@@ -8155,7 +8157,7 @@ function Checks({
                             })()}
                           </div>
                         </td>
-                        <td>
+                        <td className="col-party">
                           {check.partyId ? (
                             <button
                               type="button"
@@ -8178,9 +8180,11 @@ function Checks({
                         <td>
                           {formatMoney(check.amount, state.settings.currency)}
                         </td>
-                        <td>
+                        <td data-check-status={check.status}>
                           <select
                             value={check.status}
+                            data-selected-value={check.status}
+                            data-check-status={check.status}
                             onChange={e => {
                               const status = e.target.value as CheckStatus;
                               if (status === "جایگزین شده") {
@@ -8370,7 +8374,7 @@ function Checks({
                                       <div><strong>شماره تماس:</strong> {person.phone}</div>
                                     )}
                                     {person && (() => {
-                                      const openBal = calculatePersonUnsettledInvoiceBalance(state.invoices, person.id);
+                                      const openBal = calculatePersonUnsettledInvoiceBalance(state.invoices, person.id, state.checks);
                                       const hasDue = Math.abs(openBal.amount) > 0.01;
                                       return (
                                         <div>

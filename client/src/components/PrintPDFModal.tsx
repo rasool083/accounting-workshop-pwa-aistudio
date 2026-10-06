@@ -44,6 +44,7 @@ export function PrintActionMenu({
   const [isExporting, setIsExporting] = useState(false);
   const [loadingText, setLoadingText] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
 
   /**
    * 1. 100% Vector-Text Continuous Roll Print & PDF.
@@ -52,6 +53,7 @@ export function PrintActionMenu({
    */
   async function handleVectorContinuousRollPrint() {
     try {
+      setErrorMessage("");
       setIsExporting(true);
       setLoadingText("در حال آماده‌سازی طومار متنی وکتور...");
       if (onBeforeExport) {
@@ -60,7 +62,7 @@ export function PrintActionMenu({
       }
       const el = getTargetElement();
       if (!el) {
-        alert("عنصر چاپی یافت نشد");
+        setErrorMessage("عنصر چاپی یافت نشد");
         return;
       }
       await printVectorContinuousRoll(el, {
@@ -75,7 +77,7 @@ export function PrintActionMenu({
       }, 2500);
     } catch (err) {
       console.error(err);
-      alert("خطا در چاپ طومار: " + (err instanceof Error ? err.message : String(err)));
+      setErrorMessage("خطا در چاپ طومار: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       if (onAfterExport) onAfterExport();
       setIsExporting(false);
@@ -88,6 +90,7 @@ export function PrintActionMenu({
    */
   async function handleDownloadVectorHtml() {
     try {
+      setErrorMessage("");
       setIsExporting(true);
       setLoadingText("در حال ایجاد سند متنی طومار...");
       if (onBeforeExport) {
@@ -96,7 +99,7 @@ export function PrintActionMenu({
       }
       const el = getTargetElement();
       if (!el) {
-        alert("عنصر چاپی یافت نشد");
+        setErrorMessage("عنصر چاپی یافت نشد");
         return;
       }
       downloadVectorHtmlDocument(el, {
@@ -110,7 +113,7 @@ export function PrintActionMenu({
       }, 2000);
     } catch (err) {
       console.error(err);
-      alert("خطا در ایجاد سند متنی: " + (err instanceof Error ? err.message : String(err)));
+      setErrorMessage("خطا در ایجاد سند متنی: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       if (onAfterExport) onAfterExport();
       setIsExporting(false);
@@ -122,6 +125,7 @@ export function PrintActionMenu({
    */
   async function handleVectorA4LandscapePrint() {
     try {
+      setErrorMessage("");
       setIsExporting(true);
       setLoadingText("در حال آماده‌سازی چاپ افقی A4...");
       if (onBeforeExport) {
@@ -130,7 +134,7 @@ export function PrintActionMenu({
       }
       const el = getTargetElement();
       if (!el) {
-        alert("عنصر چاپی یافت نشد");
+        setErrorMessage("عنصر چاپی یافت نشد");
         return;
       }
       await printVectorContinuousRoll(el, {
@@ -145,7 +149,7 @@ export function PrintActionMenu({
       }, 2000);
     } catch (err) {
       console.error(err);
-      alert("خطا در چاپ: " + (err instanceof Error ? err.message : String(err)));
+      setErrorMessage("خطا در چاپ: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       if (onAfterExport) onAfterExport();
       setIsExporting(false);
@@ -157,6 +161,7 @@ export function PrintActionMenu({
    */
   async function handleContinuousRollDownload() {
     try {
+      setErrorMessage("");
       setIsExporting(true);
       setLoadingText("در حال ایجاد و پردازش فایل PDF با وضوح بالا...");
       if (onBeforeExport) {
@@ -165,7 +170,7 @@ export function PrintActionMenu({
       }
       const el = getTargetElement();
       if (!el) {
-        alert("عنصر چاپی یافت نشد");
+        setErrorMessage("عنصر چاپی یافت نشد");
         return;
       }
       await exportToContinuousRollPDF(el, {
@@ -180,7 +185,7 @@ export function PrintActionMenu({
       }, 2000);
     } catch (err) {
       console.error(err);
-      alert("خطا در ایجاد PDF طومار: " + (err instanceof Error ? err.message : String(err)));
+      setErrorMessage("خطا در ایجاد PDF طومار: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       if (onAfterExport) onAfterExport();
       setIsExporting(false);
@@ -261,6 +266,25 @@ export function PrintActionMenu({
                 <X size={14} />
               </button>
             </div>
+
+            {errorMessage && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "8px 10px",
+                  background: "#fef2f2",
+                  color: "#991b1b",
+                  borderRadius: 8,
+                  fontSize: "0.82rem",
+                  fontWeight: 600,
+                  marginBottom: 6,
+                }}
+              >
+                <span>{errorMessage}</span>
+              </div>
+            )}
 
             {successMessage ? (
               <div
