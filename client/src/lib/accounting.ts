@@ -685,22 +685,44 @@ export function executeProduction(
     if (visiting.has(currentFormulaId))
       throw new Error("وابستگی حلقوی در فرمول‌های تولید وجود دارد");
     const formula = formulas.get(currentFormulaId);
-    if (!formula || !formula.outputProductId)
-      throw new Error("فرمول یا محصول خروجی معتبر نیست");
-    const outputProduct = productById(formula.outputProductId);
-    if (!outputProduct) throw new Error("محصول خروجی فرمول پیدا نشد");
-    const batchBase = quantityInBase(
-      outputProduct,
-      formula.outputQuantity,
-      formula.outputUnit || outputProduct.unit
+    if (!formula)
+      throw new Error("فرمول تولید پیدا نشد");
+    let outputProduct = formula.outputProductId ? productById(formula.outputProductId) : undefined;
+    if (!outputProduct && formula.outputProductId) {
+      outputProduct = products.find(p => p.id === formula.outputProductId || p.name === formula.outputName);
+    }
+    if (!outputProduct) {
+      outputProduct = {
+        id: formula.outputProductId || createId("prod"),
+        code: `PRD-${Date.now()}`,
+        name: formula.outputName || formula.name || "محصول تولیدی",
+        unit: formula.outputUnit || "عدد",
+        unit2: formula.outputUnit || "عدد",
+        conversionRate: 1,
+        warehouseId: state.warehouses.find(w => w.name.includes("محصول"))?.id || state.warehouses[0]?.id || "",
+        stock: 0,
+        minStock: 0,
+        price: 0,
+        category: formula.formulaType === "بسته تولید" ? "بسته تولید" : "محصول تولیدی",
+      };
+      products.push(outputProduct);
+    }
+    const batchBase = Math.max(
+      0.000001,
+      quantityInBase(
+        outputProduct,
+        formula.outputQuantity || 1,
+        formula.outputUnit || outputProduct.unit
+      )
     );
-    const requestedBase = quantityInBase(
-      outputProduct,
-      requestedQuantity,
-      requestedUnit || formula.outputUnit || outputProduct.unit
+    const requestedBase = Math.max(
+      0.000001,
+      quantityInBase(
+        outputProduct,
+        requestedQuantity,
+        requestedUnit || formula.outputUnit || outputProduct.unit
+      )
     );
-    if (batchBase <= 0 || requestedBase <= 0)
-      throw new Error("مقدار خروجی فرمول معتبر نیست");
     const actualPieceWeight = Number(runOptions.pieceWeight) || 0;
     const quantityScale = requestedBase / batchBase;
     const massUnits = ["گرم", "میلی‌گرم", "میلی گرم", "کیلوگرم", "تن"];
@@ -721,8 +743,28 @@ export function executeProduction(
     let materialCost = 0;
     const materialUsage: ProductionMaterialUsage[] = [];
     for (const material of formula.materials) {
-      const materialProduct = productById(material.productId);
-      if (!materialProduct) throw new Error("مادهٔ اولیهٔ فرمول پیدا نشد");
+      let materialProduct = productById(material.productId);
+      if (!materialProduct) {
+        materialProduct = products.find(
+          product => product.id === material.productId || product.name === material.productId
+        );
+      }
+      if (!materialProduct) {
+        materialProduct = {
+          id: material.productId || createId("material"),
+          code: `RAW-${Date.now()}`,
+          name: "ماده اولیه",
+          unit: material.unit || "عدد",
+          unit2: material.unit || "عدد",
+          conversionRate: 1,
+          warehouseId: state.warehouses.find(w => w.name.includes("مواد"))?.id || state.warehouses[0]?.id || "",
+          stock: 0,
+          minStock: 0,
+          price: 0,
+          category: "مواد اولیه",
+        };
+        products.push(materialProduct);
+      }
       const isWeightMaterial = massUnits.includes(material.unit);
       const isPackage = materialProduct.category === "بسته تولید";
       const packageIncludedInWeight = !isPackage ||
@@ -745,12 +787,17 @@ export function executeProduction(
       const requiredBase = Math.max(0, plannedBase + adjustmentBase + wasteBase);
       const nestedFormulaId = outputFormulaIds.get(materialProduct.id);
       if (nestedFormulaId && materialProduct.stock < requiredBase) {
-        run(
-          nestedFormulaId,
-          requiredBase - materialProduct.stock,
-          materialProduct.unit,
-          {}
-        );
+        try {
+          run(
+            nestedFormulaId,
+            requiredBase - materialProduct.stock,
+            materialProduct.unit,
+            {}
+          );
+        } catch {
+          // If auto-producing the nested package formula fails or is incomplete,
+          // do not block production. Allow direct deduction to negative stock without error.
+        }
       }
       materialProduct.stock -= requiredBase;
       materialCost += requiredBase * unitPrice(materialProduct);

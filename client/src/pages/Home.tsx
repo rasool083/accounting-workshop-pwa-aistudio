@@ -10499,8 +10499,7 @@ function Production({
     }
   };
 
-  function saveProduction(event: React.FormEvent) {
-    event.preventDefault();
+  function buildFormulaFromForm(): { formula: ProductionFormula; outputProduct: Product; products: Product[] } | null {
     const quantity = quantityValue(form.outputQuantity);
     const materials = form.materials
       .map(item => ({
@@ -10516,7 +10515,7 @@ function Production({
       quantity <= 0 ||
       !materials.length
     )
-      return;
+      return null;
 
     const outputProduct =
       selectedOutput ||
@@ -10535,7 +10534,7 @@ function Production({
             category: "بسته تولید" as const,
           }
         : undefined);
-    if (!outputProduct) return;
+    if (!outputProduct) return null;
 
     const formula: ProductionFormula = {
       id: selectedFormulaId || createId("formula"),
@@ -10555,6 +10554,16 @@ function Production({
     const products = selectedOutput
       ? state.products
       : [...state.products, outputProduct];
+
+    return { formula, outputProduct, products };
+  }
+
+  function saveProduction(event: React.FormEvent) {
+    event.preventDefault();
+    const result = buildFormulaFromForm();
+    if (!result) return;
+    const { formula, products } = result;
+
     onSave(
       {
         ...state,
@@ -10565,7 +10574,7 @@ function Production({
             )
           : [...state.productionFormulas, formula],
       },
-      selectedFormulaId ? "فرمول ویرایش شد؛ تولید هنوز ثبت نشده است" : "فرمول ذخیره شد؛ برای تولید از دکمه تولید استفاده کنید"
+      selectedFormulaId ? "فرمول ویرایش شد؛ تولید هنوز ثبت نشده است" : "فرمول ذخیره شد؛ برای تولید از کلید تولید استفاده کنید"
     );
     setForm({
       name: "",
@@ -10580,6 +10589,40 @@ function Production({
     });
     setMaterialQuantityDrafts({});
     setSelectedFormulaId("");
+  }
+
+  function saveAndProduce() {
+    const result = buildFormulaFromForm();
+    if (!result) {
+      window.alert("لطفاً اطلاعات فرمول (نام، محصول خروجی و حداقل یک ماده اولیه با مقدار معتبر) را وارد کنید");
+      return;
+    }
+    const { formula, products } = result;
+    const nextState = {
+      ...state,
+      products,
+      productionFormulas: selectedFormulaId
+        ? state.productionFormulas.map(item =>
+            item.id === selectedFormulaId ? formula : item
+          )
+        : [...state.productionFormulas, formula],
+    };
+    onSave(nextState, "فرمول ذخیره شد؛ برای ثبت بچ پنجره تولید باز شد");
+    setSelectedFormulaId("");
+    setProductionDialog({
+      formula,
+      quantity: String(formula.outputQuantity),
+      unit: formula.outputUnit,
+      batchNumber: `B-${Date.now()}`,
+      pieceWeight: "",
+      pieceWeightUnit: "گرم",
+      wastePercent: "0",
+      adjustments: {},
+      excludedMaterialIds: formula.materials
+        .filter(material => state.products.find(product => product.id === material.productId)?.category === "بسته تولید")
+        .map(material => material.id),
+      note: "",
+    });
   }
 
   function loadFormula(formula: ProductionFormula) {
@@ -10670,8 +10713,12 @@ function Production({
     if (!productionDialog) return;
     try {
       const quantity = quantityValue(productionDialog.quantity);
+      if (quantity <= 0) {
+        window.alert("مقدار تولید باید بزرگ‌تر از صفر باشد");
+        return;
+      }
       const options = {
-        batchNumber: productionDialog.batchNumber,
+        batchNumber: productionDialog.batchNumber.trim() || `B-${Date.now()}`,
         pieceWeight: quantityValue(productionDialog.pieceWeight),
         pieceWeightUnit: productionDialog.pieceWeightUnit,
         wastePercent: quantityValue(productionDialog.wastePercent),
@@ -10688,7 +10735,12 @@ function Production({
         formula => formula.id === productionDialog.formula.id
       );
       const executionState = hasFormula
-        ? baseState
+        ? {
+            ...baseState,
+            productionFormulas: baseState.productionFormulas.map(f =>
+              f.id === productionDialog.formula.id ? productionDialog.formula : f
+            ),
+          }
         : {
             ...baseState,
             productionFormulas: [
@@ -10709,7 +10761,12 @@ function Production({
           formula => formula.id !== productionDialog.formula.id
         );
       }
-      onSave(next, productionDialog.editingRecordId ? "بچ و موجودی با اطلاعات جدید اصلاح شد" : `تولید ${productionDialog.formula.name} ثبت شد`);
+      onSave(
+        next,
+        productionDialog.editingRecordId
+          ? "بچ و موجودی با اطلاعات جدید اصلاح شد"
+          : `تولید ${productionDialog.formula.name} با موفقیت ثبت شد (موجودی اقلام در صورت کسری منفی شد)`
+      );
       setProductionDialog(null);
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "تولید انجام نشد");
@@ -11030,9 +11087,18 @@ function Production({
               واحد: {formatMoney(formulaCostPerUnit, state.settings.currency)}
             </strong>
           </div>
-          <button className="button button-primary" type="submit">
-            <Check size={16} /> ذخیرهٔ فرمول
-          </button>
+          <div className="form-actions">
+            <button className="button button-primary" type="submit">
+              <Check size={16} /> ذخیرهٔ فرمول
+            </button>
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={saveAndProduce}
+            >
+              <Plus size={16} /> ذخیره و ثبت تولید
+            </button>
+          </div>
         </form>
         <div className="panel">
           <div className="section-heading">
@@ -11344,8 +11410,7 @@ function Production({
               <textarea value={productionDialog.note} onChange={event => setProductionDialog({ ...productionDialog, note: event.target.value })} placeholder="علت اصلاح یا توضیح تولید" />
             </label>
             <p className="muted-cell">
-              مواد اولیه طبق فرمول مصرف می‌شوند. اگر مادهٔ اولیه خود محصول یک
-              فرمول باشد، مقدار لازم از آن فرمول ابتدا تولید خواهد شد.
+              مواد اولیه و بسته‌ها طبق فرمول مصرف می‌شوند. در صورت عدم موجودی یا کسری مواد اولیه و بسته‌ها در انبار، تولید بدون مانع ثبت شده و موجودی انبار اقلام کسری به‌صورت منفی ثبت می‌گردد.
             </p>
             <div className="form-actions">
               <button

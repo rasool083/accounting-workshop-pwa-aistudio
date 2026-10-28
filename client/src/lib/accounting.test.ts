@@ -929,6 +929,71 @@ describe("production execution", () => {
     expect(result.state.products.find(item => item.id === raw.id)?.stock).toBe(-10);
   });
 
+  it("allows production to proceed when packages have zero stock and leaves package stock negative", () => {
+    const pack = {
+      id: "zero-pack", code: "ZP", name: "بسته بدون موجودی", unit: "عدد", unit2: "عدد",
+      conversionRate: 1, stock: 0, minStock: 0, price: 50, category: "بسته تولید" as const,
+    };
+    const output = {
+      id: "prod-with-pack", code: "PWP", name: "محصول نهایی با بسته", unit: "عدد", unit2: "عدد",
+      conversionRate: 1, stock: 0, minStock: 0, price: 0, category: "محصول تولیدی" as const,
+    };
+    const formula = {
+      id: "formula-with-zero-pack", name: "فرمول قطعه با بسته ناموجود", formulaType: "قطعه" as const,
+      outputProductId: output.id, outputName: output.name, outputQuantity: 1, outputUnit: "عدد",
+      materials: [{ id: "pack-mat", productId: pack.id, quantity: 4, unit: "عدد" }],
+      costs: [], note: "",
+    };
+    const state = {
+      schemaVersion: 2, revision: 1, updatedAt: "1405/01/01",
+      settings: { businessName: "آزمون", currency: "تومان", dayBasis: 30 as const, units: ["عدد"] },
+      people: [], products: [pack, output], warehouses: [], invoices: [], priceHistory: [],
+      paymentRules: [], transactions: [], checks: [], accounts: [], audit: [],
+      productionFormulas: [formula], productionRecords: [],
+    };
+    const result = executeProduction(state, formula.id, 2, "عدد");
+    expect(result.state.products.find(item => item.id === pack.id)?.stock).toBe(-8);
+    expect(result.state.products.find(item => item.id === output.id)?.stock).toBe(2);
+    expect(result.state.productionRecords).toHaveLength(1);
+  });
+
+  it("allows production when nested package ingredients also have zero stock without throwing error", () => {
+    const rawIng = {
+      id: "nested-raw", code: "NRW", name: "ماده اولیه بسته", unit: "گرم", unit2: "گرم",
+      conversionRate: 1, stock: 0, minStock: 0, price: 10, category: "مواد اولیه" as const,
+    };
+    const packWithFormula = {
+      id: "nested-pack", code: "NPK", name: "بسته فرمول‌دار", unit: "عدد", unit2: "عدد",
+      conversionRate: 1, stock: 0, minStock: 0, price: 50, category: "بسته تولید" as const,
+    };
+    const finalProduct = {
+      id: "final-prod", code: "FPD", name: "محصول نهایی", unit: "عدد", unit2: "عدد",
+      conversionRate: 1, stock: 0, minStock: 0, price: 0, category: "محصول تولیدی" as const,
+    };
+    const packFormula = {
+      id: "pack-engine", name: "فرمول بسته", formulaType: "بسته تولید" as const,
+      outputProductId: packWithFormula.id, outputName: packWithFormula.name, outputQuantity: 1, outputUnit: "عدد",
+      materials: [{ id: "raw-line", productId: rawIng.id, quantity: 20, unit: "گرم" }],
+      costs: [], note: "",
+    };
+    const mainFormula = {
+      id: "main-engine", name: "فرمول محصول", formulaType: "قطعه" as const,
+      outputProductId: finalProduct.id, outputName: finalProduct.name, outputQuantity: 1, outputUnit: "عدد",
+      materials: [{ id: "pack-line", productId: packWithFormula.id, quantity: 2, unit: "عدد" }],
+      costs: [], note: "",
+    };
+    const state = {
+      schemaVersion: 2, revision: 1, updatedAt: "1405/01/01",
+      settings: { businessName: "آزمون", currency: "تومان", dayBasis: 30 as const, units: ["گرم", "عدد"] },
+      people: [], products: [rawIng, packWithFormula, finalProduct], warehouses: [], invoices: [], priceHistory: [],
+      paymentRules: [], transactions: [], checks: [], accounts: [], audit: [],
+      productionFormulas: [mainFormula, packFormula], productionRecords: [],
+    };
+    const result = executeProduction(state, mainFormula.id, 3, "عدد");
+    expect(result.state.products.find(item => item.id === rawIng.id)?.stock).toBe(-120);
+    expect(result.state.products.find(item => item.id === finalProduct.id)?.stock).toBe(3);
+  });
+
   it("applies inventory balance in the selected unit without financial transactions", () => {
     const product = {
       id: "balance-product", code: "BP", name: "ماده بالانس", unit: "کیلوگرم", unit2: "گرم",
