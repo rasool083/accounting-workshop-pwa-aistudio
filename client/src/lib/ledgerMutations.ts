@@ -8,11 +8,13 @@ import {
   Account,
   Product,
   rebuildCheckAllocations,
+  rebuildPurchasePayables,
   releasePurchasePaymentsForInvoice,
   calculateInvoiceAmount,
   calculateBaseUnitLine,
   formatMoney,
   createId,
+  todayJalali,
 } from "./accounting";
 
 /**
@@ -745,3 +747,101 @@ export function editCashEventAndRevert(
     message: `سند اصلاح مانده ویرایش شد و مانده حساب متناسب با تغییر به‌روز گردید.`,
   };
 }
+
+// ============================================================================
+// INVOICE CASH PAYMENT MUTATIONS
+// ============================================================================
+
+export function addCashPaymentToInvoice(
+  state: AppState,
+  invoiceId: string,
+  payment: {
+    amount: number;
+    accountId: string;
+    date?: string;
+    note?: string;
+    trackingCode?: string;
+  }
+): { nextState: AppState; message: string; transactionId: string } {
+  const invoice = state.invoices.find(inv => inv.id === invoiceId);
+  if (!invoice) throw new Error("فاکتور مورد نظر یافت نشد.");
+  if (payment.amount <= 0) throw new Error("مبلغ پرداختی باید بزرگ‌تر از صفر باشد.");
+  const account = state.accounts.find(acc => acc.id === payment.accountId);
+  if (!account) throw new Error("حساب مالی انتخاب‌شده معتبر نیست.");
+
+  const date = payment.date || todayJalali();
+  const isSale = invoice.type === "فروش";
+  const txnType = isSale ? "دریافت" : "پرداخت";
+  const defaultNote = isSale
+    ? `پرداخت نقدی/بانکی فاکتور فروش شماره ${invoice.number || invoice.id}`
+    : `پرداخت نقدی/بانکی فاکتور خرید شماره ${invoice.number || invoice.id}`;
+
+  const partyName = invoice.partyId
+    ? state.people.find(p => p.id === invoice.partyId)?.name || invoice.partyId
+    : "";
+
+  const newTxn: Transaction = {
+    id: createId("txn"),
+    date,
+    type: txnType,
+    accountId: payment.accountId,
+    party: partyName,
+    partyId: invoice.partyId,
+    amount: payment.amount,
+    category: isSale ? "دریافت از مشتری" : "پرداخت به تامین‌کننده",
+    status: "ثبت شده",
+    note: payment.note?.trim() || defaultNote,
+    trackingCode: payment.trackingCode?.trim(),
+    targetInvoiceId: invoice.id,
+  };
+
+  const nextAccounts = applyAccountEffect(state.accounts, newTxn, 1);
+  let nextState: AppState = {
+    ...state,
+    accounts: nextAccounts,
+    transactions: [newTxn, ...state.transactions],
+  };
+
+  if (isSale) {
+    nextState = rebuildCheckAllocations(nextState);
+  } else {
+    nextState = rebuildPurchasePayables(nextState);
+  }
+
+  return {
+    nextState,
+    message: `پرداخت نقدی به مبلغ ${formatMoney(payment.amount)} به فاکتور متصل شد.`,
+    transactionId: newTxn.id,
+  };
+}
+
+export function deleteCashPaymentFromInvoice(
+  state: AppState,
+  transactionId: string
+): { nextState: AppState; message: string } {
+  const txn = state.transactions.find(t => t.id === transactionId);
+  if (!txn) throw new Error("تراکنش پرداخت یافت نشد.");
+  const targetInvoice = txn.targetInvoiceId
+    ? state.invoices.find(inv => inv.id === txn.targetInvoiceId)
+    : undefined;
+
+  const nextAccounts = applyAccountEffect(state.accounts, txn, -1);
+  let nextState: AppState = {
+    ...state,
+    accounts: nextAccounts,
+    transactions: state.transactions.filter(t => t.id !== transactionId),
+  };
+
+  if (targetInvoice?.type === "فروش" || txn.type === "دریافت") {
+    nextState = rebuildCheckAllocations(nextState);
+  }
+  if (targetInvoice?.type === "خرید" || txn.type === "پرداخت") {
+    nextState = rebuildPurchasePayables(nextState);
+  }
+
+  return {
+    nextState,
+    message: `پرداخت نقدی متصل به فاکتور حذف شد و مانده فاکتور و حساب به‌روز گردید.`,
+  };
+}
+

@@ -306,6 +306,10 @@ export interface Transaction {
   type: TransactionType;
   date: string;
   partyId?: string;
+  party?: string;
+  category?: string;
+  targetInvoiceId?: string;
+  trackingCode?: string;
   accountId?: string;
   fromAccountId?: string;
   toAccountId?: string;
@@ -1251,7 +1255,15 @@ export function normalizeState(input: unknown): AppState {
     paymentRules: Array.isArray(source.paymentRules)
       ? source.paymentRules
       : seedState.paymentRules,
-    transactions: Array.isArray(source.transactions) ? source.transactions : [],
+    transactions: Array.isArray(source.transactions)
+      ? source.transactions.map(txn => ({
+          ...txn,
+          targetInvoiceId:
+            typeof txn.targetInvoiceId === "string" && txn.targetInvoiceId.trim()
+              ? txn.targetInvoiceId.trim()
+              : undefined,
+        }))
+      : [],
     checks: Array.isArray(source.checks)
       ? source.checks.map(check => ({
           ...check,
@@ -2292,7 +2304,8 @@ export function settleChecksFIFO(
   invoices: Invoice[],
   paymentRules: PaymentRule[] = [],
   dayBasis: number | "شمسی" = 30,
-  checkGroupAllocations: CheckGroupAllocation[] = []
+  checkGroupAllocations: CheckGroupAllocation[] = [],
+  transactions: Transaction[] = []
 ) {
   const settlements: FIFOSettlement[] = [];
   const eligibleInvoices = [...invoices]
@@ -2317,8 +2330,25 @@ export function settleChecksFIFO(
         ) ||
         a.id.localeCompare(b.id)
     );
+
+  const cashPaidByInvoice = new Map<string, number>();
+  for (const invoice of eligibleInvoices) {
+    const cashSum = (transactions || [])
+      .filter(
+        t =>
+          t.targetInvoiceId === invoice.id &&
+          t.status !== "باطل" &&
+          (t.type === "دریافت" || t.type === "فروش" || t.type === "درآمد")
+      )
+      .reduce((sum, t) => sum + t.amount, 0);
+    cashPaidByInvoice.set(invoice.id, cashSum);
+  }
+
   const remainingByInvoice = new Map(
-    eligibleInvoices.map(invoice => [invoice.id, Math.max(0, invoice.amount)])
+    eligibleInvoices.map(invoice => {
+      const cashPaid = cashPaidByInvoice.get(invoice.id) || 0;
+      return [invoice.id, Math.max(0, invoice.amount - cashPaid)];
+    })
   );
   const remainingByCheck = new Map(
     eligibleChecks.map(check => [check.id, Math.max(0, check.amount)])
@@ -2595,8 +2625,13 @@ export function calculatePersonUnsettledInvoiceBalance(
           clearedAllocationsSum += (alloc.principalAmount ?? alloc.amount);
         }
       });
-      // The actual collected payment is what cleared; uncollected ("نزد ما") or bounced ("برگشتی") checks remain debt
-      effectivePaid = clearedAllocationsSum;
+      // Cash payments are 100% collected immediately, while uncollected ("نزد ما") or bounced checks remain debt
+      const checkAllocationsTotal = inv.allocations.reduce(
+        (sum, a) => sum + (a.principalAmount ?? a.amount),
+        0
+      );
+      const cashPaid = Math.max(0, (inv.paidAmount || 0) - checkAllocationsTotal);
+      effectivePaid = Math.min(inv.amount, cashPaid + clearedAllocationsSum);
     }
 
     const remaining = Math.max(0, inv.amount - effectivePaid);
@@ -2943,7 +2978,8 @@ export function rebuildCheckAllocations(state: AppState): AppState {
     state.invoices,
     state.paymentRules,
     state.settings.dayBasis,
-    state.checkGroupAllocations || []
+    state.checkGroupAllocations || [],
+    state.transactions || []
   );
   const byInvoice = new Map<string, FIFOSettlement[]>();
   settlements.forEach(item => {
@@ -2956,7 +2992,16 @@ export function rebuildCheckAllocations(state: AppState): AppState {
   const invoices = state.invoices.map(invoice => {
     if (invoice.type !== "فروش" || invoice.status === "باطل") return invoice;
     const rows = byInvoice.get(invoice.id) || [];
-    const paidAmount = principalCollectedForInvoice(invoice.amount, rows);
+    const checkPrincipal = principalCollectedForInvoice(invoice.amount, rows);
+    const cashPaid = (state.transactions || [])
+      .filter(
+        t =>
+          t.targetInvoiceId === invoice.id &&
+          t.status !== "باطل" &&
+          (t.type === "دریافت" || t.type === "فروش" || t.type === "درآمد")
+      )
+      .reduce((sum, t) => sum + t.amount, 0);
+    const paidAmount = Math.min(invoice.amount, cashPaid + checkPrincipal);
     return {
       ...invoice,
       paidAmount,
@@ -2969,9 +3014,9 @@ export function rebuildCheckAllocations(state: AppState): AppState {
         allocatedAt: now,
       })),
       status:
-        paidAmount >= invoice.amount
+        paidAmount >= invoice.amount - FIFO_EPSILON
           ? ("تسویه شده" as const)
-          : paidAmount > 0
+          : paidAmount > FIFO_EPSILON
             ? ("تسویه جزئی" as const)
             : ("باز" as const),
     };
@@ -3035,14 +3080,20 @@ export function rebuildPurchasePayables(state: AppState): AppState {
   settlements.forEach(item => byInvoice.set(item.invoiceId, [...(byInvoice.get(item.invoiceId) || []), item]));
   const invoices = state.invoices.map(invoice => {
     if (invoice.type !== "خرید" || invoice.status === "باطل") return invoice;
-    const paidAmount = Math.min(
-      invoice.amount,
-      (byInvoice.get(invoice.id) || []).reduce((sum, item) => sum + item.amount, 0)
-    );
+    const payableSum = (byInvoice.get(invoice.id) || []).reduce((sum, item) => sum + item.amount, 0);
+    const cashTxnSum = (state.transactions || [])
+      .filter(
+        t =>
+          t.targetInvoiceId === invoice.id &&
+          t.status !== "باطل" &&
+          (t.type === "پرداخت" || t.type === "خرید")
+      )
+      .reduce((sum, t) => sum + t.amount, 0);
+    const paidAmount = Math.min(invoice.amount, payableSum + cashTxnSum);
     return {
       ...invoice,
       paidAmount,
-      status: paidAmount >= invoice.amount
+      status: paidAmount >= invoice.amount - FIFO_EPSILON
         ? ("تسویه شده" as const)
         : paidAmount > FIFO_EPSILON
           ? ("تسویه جزئی" as const)

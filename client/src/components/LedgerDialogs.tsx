@@ -57,6 +57,8 @@ import {
   editCheckAndRevert,
   deleteCashEventAndRevert,
   editCashEventAndRevert,
+  addCashPaymentToInvoice,
+  deleteCashPaymentFromInvoice,
 } from "@/lib/ledgerMutations";
 
 // Helper for cash direction label
@@ -1906,21 +1908,106 @@ export function InvoiceDetailDialog({
     ? state.people.find(p => p.id === currentInvoice.partyId)
     : undefined;
 
-  // Compute FIFO check allocations for this invoice
+  // Connected cash and bank payments directly linked to this invoice
+  const connectedCashPayments = useMemo(() => {
+    return (state.transactions || []).filter(
+      t =>
+        t.targetInvoiceId === currentInvoice.id &&
+        t.status !== "باطل" &&
+        (t.type === "دریافت" || t.type === "پرداخت" || t.type === "فروش" || t.type === "خرید")
+    );
+  }, [state.transactions, currentInvoice.id]);
+
+  const totalCashPaid = useMemo(() => {
+    return connectedCashPayments.reduce((sum, t) => sum + (t.amount || 0), 0);
+  }, [connectedCashPayments]);
+
+  // Compute FIFO check allocations for this invoice (considering cash payments already paid)
   const allocations = useMemo(() => {
     return settleChecksFIFO(
       state.checks,
       state.invoices,
       state.paymentRules,
       state.settings.dayBasis,
-      state.checkGroupAllocations || []
+      state.checkGroupAllocations || [],
+      state.transactions || []
     ).filter(item => item.invoiceId === currentInvoice.id);
-  }, [state, currentInvoice.id]);
+  }, [state.checks, state.invoices, state.paymentRules, state.settings.dayBasis, state.checkGroupAllocations, state.transactions, currentInvoice.id]);
 
   const itemsTotal = (currentInvoice.items || []).reduce(
     (sum, item) => sum + (Number(item.quantity) || 0) * (Number(item.unitPrice) || 0),
     0
   );
+
+  const remainingInvoiceBalance = Math.max(
+    0,
+    currentInvoice.amount - (currentInvoice.paidAmount || 0)
+  );
+
+  // Cash payment inline form state
+  const [isAddingCashPayment, setIsAddingCashPayment] = useState(false);
+  const [cashPaymentForm, setCashPaymentForm] = useState({
+    amount: remainingInvoiceBalance > 0 ? remainingInvoiceBalance : currentInvoice.amount,
+    accountId: state.accounts[0]?.id || "",
+    date: todayJalali(),
+    note: "",
+    trackingCode: "",
+  });
+  const [cashPaymentError, setCashPaymentError] = useState("");
+
+  function handleAddCashPayment(e: React.FormEvent) {
+    e.preventDefault();
+    setCashPaymentError("");
+    const parsedAmount = Number(cashPaymentForm.amount);
+    if (!parsedAmount || parsedAmount <= 0) {
+      setCashPaymentError("مبلغ پرداخت باید بزرگ‌تر از صفر باشد.");
+      return;
+    }
+    if (!cashPaymentForm.accountId) {
+      setCashPaymentError("لطفاً یک حساب مالی (بانک یا صندوق) انتخاب کنید.");
+      return;
+    }
+
+    try {
+      const res = addCashPaymentToInvoice(state, currentInvoice.id, {
+        amount: parsedAmount,
+        accountId: cashPaymentForm.accountId,
+        date: cashPaymentForm.date,
+        note: cashPaymentForm.note,
+        trackingCode: cashPaymentForm.trackingCode,
+      });
+      const updated = res.nextState.invoices.find(i => i.id === currentInvoice.id);
+      if (updated) setCurrentInvoice(updated);
+      setIsAddingCashPayment(false);
+      setCashPaymentForm({
+        amount: 0,
+        accountId: state.accounts[0]?.id || "",
+        date: todayJalali(),
+        note: "",
+        trackingCode: "",
+      });
+      onSave?.(res.nextState, res.message);
+    } catch (err: any) {
+      setCashPaymentError(err.message || "خطا در ثبت و اتصال پرداخت نقدی");
+    }
+  }
+
+  function handleDeleteCashPayment(txnId: string, amount: number) {
+    if (
+      !window.confirm(
+        `آیا از حذف این پرداخت نقدی به مبلغ ${formatMoney(amount, state.settings.currency)} مطمئن هستید؟`
+      )
+    )
+      return;
+    try {
+      const res = deleteCashPaymentFromInvoice(state, txnId);
+      const updated = res.nextState.invoices.find(i => i.id === currentInvoice.id);
+      if (updated) setCurrentInvoice(updated);
+      onSave?.(res.nextState, res.message);
+    } catch (err: any) {
+      setCashPaymentError(err.message || "خطا در حذف پرداخت نقدی");
+    }
+  }
 
   function handleDeleteInvoice() {
     if (
@@ -2249,22 +2336,23 @@ export function InvoiceDetailDialog({
           </div>
 
           <div>
+            <span style={{ fontSize: "0.8rem", color: "#64748b" }}>پرداخت نقدی / بانکی:</span>
+            <div style={{ fontWeight: 800, fontSize: "1.15rem", color: "#15803d", marginTop: 2 }}>
+              {formatMoney(totalCashPaid, state.settings.currency)}
+            </div>
+          </div>
+
+          <div>
             <span style={{ fontSize: "0.8rem", color: "#64748b" }}>مانده تسویه‌نشده:</span>
             <div
               style={{
                 fontWeight: 800,
                 fontSize: "1.15rem",
-                color:
-                  currentInvoice.amount - (currentInvoice.paidAmount || 0) > 0
-                    ? "#b91c1c"
-                    : "#15803d",
+                color: remainingInvoiceBalance > 0 ? "#b91c1c" : "#15803d",
                 marginTop: 2,
               }}
             >
-              {formatMoney(
-                Math.max(0, currentInvoice.amount - (currentInvoice.paidAmount || 0)),
-                state.settings.currency
-              )}
+              {formatMoney(remainingInvoiceBalance, state.settings.currency)}
             </div>
           </div>
         </div>
@@ -2551,10 +2639,266 @@ export function InvoiceDetailDialog({
           </div>
         </div>
 
+        {/* Connected Cash & Bank Payments Subtable */}
+        <div style={{ marginBottom: 20 }}>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: 8,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <strong style={{ fontSize: "0.9rem", color: "#334155" }}>
+                پرداخت‌های نقدی و بانکی متصل به فاکتور ({formatNumber(connectedCashPayments.length)} مورد)
+              </strong>
+              {totalCashPaid > 0 && (
+                <span
+                  style={{
+                    background: "#dcfce7",
+                    color: "#15803d",
+                    fontWeight: 700,
+                    fontSize: "0.78rem",
+                    padding: "2px 8px",
+                    borderRadius: 6,
+                  }}
+                >
+                  مجموع واریزی/پرداختی: {formatMoney(totalCashPaid, state.settings.currency)}
+                </span>
+              )}
+            </div>
+            {onSave && (
+              <button
+                type="button"
+                className="button button-ghost button-small"
+                onClick={() => {
+                  setCashPaymentForm({
+                    amount: remainingInvoiceBalance > 0 ? remainingInvoiceBalance : currentInvoice.amount,
+                    accountId: state.accounts[0]?.id || "",
+                    date: todayJalali(),
+                    note: "",
+                    trackingCode: "",
+                  });
+                  setCashPaymentError("");
+                  setIsAddingCashPayment(!isAddingCashPayment);
+                }}
+                style={{ fontSize: "0.78rem", color: "#15803d", gap: 4 }}
+              >
+                <Plus size={14} />
+                افزودن پرداخت نقدی / بانکی
+              </button>
+            )}
+          </div>
+
+          {/* Cash Payment Error Banner */}
+          {cashPaymentError && (
+            <div
+              style={{
+                background: "#fef2f2",
+                border: "1px solid #fecaca",
+                color: "#b91c1c",
+                padding: "8px 12px",
+                borderRadius: 8,
+                fontSize: "0.82rem",
+                marginBottom: 8,
+              }}
+            >
+              {cashPaymentError}
+            </div>
+          )}
+
+          {/* Add Cash Payment Inline Form */}
+          {isAddingCashPayment && (
+            <form
+              onSubmit={handleAddCashPayment}
+              style={{
+                background: "#f0fdf4",
+                border: "1px solid #bbf7d0",
+                borderRadius: 10,
+                padding: 12,
+                marginBottom: 10,
+                display: "grid",
+                gridTemplateColumns: "1.2fr 1.5fr 1fr 1fr 1.5fr auto",
+                gap: 8,
+                alignItems: "end",
+              }}
+            >
+              <div>
+                <label style={{ fontSize: "0.74rem", color: "#374151", display: "block" }}>
+                  مبلغ پرداختی ({state.settings.currency}):
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  step="any"
+                  value={cashPaymentForm.amount}
+                  onChange={e =>
+                    setCashPaymentForm({ ...cashPaymentForm, amount: Number(e.target.value) || 0 })
+                  }
+                  required
+                  style={{ width: "100%", padding: "5px 6px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                />
+              </div>
+
+              <div>
+                <label style={{ fontSize: "0.74rem", color: "#374151", display: "block" }}>
+                  حساب مالی (بانک / صندوق):
+                </label>
+                <select
+                  value={cashPaymentForm.accountId}
+                  onChange={e =>
+                    setCashPaymentForm({ ...cashPaymentForm, accountId: e.target.value })
+                  }
+                  required
+                  style={{ width: "100%", padding: "5px 6px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                >
+                  {state.accounts.map(acc => (
+                    <option key={acc.id} value={acc.id}>
+                      {acc.name} ({acc.type} · موجودی: {formatMoney(acc.balance, state.settings.currency)})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label style={{ fontSize: "0.74rem", color: "#374151", display: "block" }}>
+                  تاریخ پرداخت:
+                </label>
+                <input
+                  type="text"
+                  value={cashPaymentForm.date}
+                  onChange={e =>
+                    setCashPaymentForm({ ...cashPaymentForm, date: e.target.value })
+                  }
+                  required
+                  placeholder="۱۴۰۳/۰۱/۰۱"
+                  style={{ width: "100%", padding: "5px 6px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                />
+              </div>
+
+              <div>
+                <label style={{ fontSize: "0.74rem", color: "#374151", display: "block" }}>
+                  کد ارجاع / پیگیری:
+                </label>
+                <input
+                  type="text"
+                  placeholder="اختیاری"
+                  value={cashPaymentForm.trackingCode}
+                  onChange={e =>
+                    setCashPaymentForm({ ...cashPaymentForm, trackingCode: e.target.value })
+                  }
+                  style={{ width: "100%", padding: "5px 6px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                />
+              </div>
+
+              <div>
+                <label style={{ fontSize: "0.74rem", color: "#374151", display: "block" }}>
+                  شرح و توضیحات:
+                </label>
+                <input
+                  type="text"
+                  placeholder="مثلاً واریز از کارت‌خوان یا کارت به کارت"
+                  value={cashPaymentForm.note}
+                  onChange={e =>
+                    setCashPaymentForm({ ...cashPaymentForm, note: e.target.value })
+                  }
+                  style={{ width: "100%", padding: "5px 6px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                />
+              </div>
+
+              <div style={{ display: "flex", gap: 4 }}>
+                <button type="submit" className="button button-primary button-small" style={{ background: "#15803d" }}>
+                  ثبت پرداخت
+                </button>
+                <button
+                  type="button"
+                  className="button button-ghost button-small"
+                  onClick={() => setIsAddingCashPayment(false)}
+                >
+                  لغو
+                </button>
+              </div>
+            </form>
+          )}
+
+          {/* Cash Payments Table */}
+          {connectedCashPayments.length > 0 ? (
+            <div className="table-wrap" style={{ maxHeight: 180, overflowY: "auto" }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th style={{ width: "5%" }}>#</th>
+                    <th style={{ width: "12%" }}>تاریخ</th>
+                    <th style={{ width: "18%" }}>حساب مالی</th>
+                    <th style={{ width: "14%" }}>نوع سند</th>
+                    <th style={{ width: "14%" }}>کد پیگیری</th>
+                    <th style={{ width: "22%" }}>بابت / شرح</th>
+                    <th style={{ width: "15%" }}>مبلغ پرداختی</th>
+                    {onSave && <th style={{ width: "8%" }}>عملیات</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {connectedCashPayments.map((txn, idx) => {
+                    const acc = state.accounts.find(a => a.id === txn.accountId);
+                    return (
+                      <tr key={txn.id}>
+                        <td>{idx + 1}</td>
+                        <td>{formatDate(txn.date)}</td>
+                        <td>
+                          <strong>{acc?.name || "حساب مالی"}</strong>
+                          <small className="muted-cell" style={{ display: "block" }}>
+                            {acc?.type || "بانکی"}
+                          </small>
+                        </td>
+                        <td>
+                          <span className="badge green">{txn.type}</span>
+                        </td>
+                        <td>{txn.trackingCode || "—"}</td>
+                        <td>{txn.note || "پرداخت نقدی فاکتور"}</td>
+                        <td className="amount-cell" style={{ color: "#15803d" }}>
+                          <strong>{formatMoney(txn.amount, state.settings.currency)}</strong>
+                        </td>
+                        {onSave && (
+                          <td>
+                            <button
+                              type="button"
+                              className="icon-button"
+                              onClick={() => handleDeleteCashPayment(txn.id, txn.amount)}
+                              title="حذف این پرداخت نقدی و برگشت مانده حساب"
+                              style={{ color: "#dc2626" }}
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div
+              style={{
+                background: "#f8fafc",
+                border: "1px dashed #cbd5e1",
+                borderRadius: 8,
+                padding: "12px",
+                textAlign: "center",
+                color: "#64748b",
+                fontSize: "0.82rem",
+              }}
+            >
+              هنوز هیچ پرداخت نقدی یا واریز بانکی به این فاکتور متصل نشده است. برای ثبت، روی «افزودن پرداخت نقدی / بانکی» کلیک کنید.
+            </div>
+          )}
+        </div>
+
         {/* Check Settlements / Allocations Subtable */}
         <div>
           <strong style={{ fontSize: "0.9rem", color: "#334155", display: "block", marginBottom: 6 }}>
-            چک‌ها و پرداخت‌های تخصیص‌یافته به این فاکتور ({formatNumber(allocations.length)} مورد)
+            چک‌های تخصیص‌یافته به این فاکتور ({formatNumber(allocations.length)} مورد)
           </strong>
           {allocations.length ? (
             <div className="table-wrap" style={{ maxHeight: 220, overflowY: "auto" }}>

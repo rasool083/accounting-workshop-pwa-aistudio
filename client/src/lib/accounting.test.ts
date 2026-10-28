@@ -36,7 +36,9 @@ import {
   parseLocalizedNumber,
   jalaliWeekday,
   calculateBaseUnitLine,
+  calculatePersonUnsettledInvoiceBalance,
 } from "./accounting";
+import { addCashPaymentToInvoice, deleteCashPaymentFromInvoice } from "./ledgerMutations";
 import { priceUnitFixture } from "./fixtures/price-unit.fixture";
 
 describe("bank fee rules", () => {
@@ -1708,3 +1710,112 @@ describe("localized quantity with base-unit pricing", () => {
     expect(line.total).toBe(108_000_000);
   });
 });
+
+describe("invoice with cash payment and check combination", () => {
+  it("settles an invoice using both a direct cash payment and a check allocation", () => {
+    const rawState = normalizeState({
+      accounts: [{ id: "acc-bank", name: "بانک سامان", type: "بانک", balance: 1_000_000 }],
+      people: [{ id: "p-customer", name: "مشتری نمونه", type: "مشتری", roles: ["مشتری"] }],
+      invoices: [{
+        id: "inv-sale-1",
+        number: "۱۰۱",
+        type: "فروش",
+        partyId: "p-customer",
+        customer: "مشتری نمونه",
+        date: "1403/01/10",
+        amount: 10_000_000,
+        paidAmount: 0,
+        status: "باز",
+        items: [{ productId: "item-1", description: "کالا ۱", quantity: 10, unitPrice: 1_000_000 }],
+      }],
+      checks: [],
+      paymentRules: [{
+        id: "rule-cash",
+        name: "نقدی بدون دیرکرد",
+        rate: 0,
+        active: true,
+        tiers: [],
+      }],
+    });
+
+    // 1. Add cash payment of 4,000,000 to invoice (no checks yet)
+    const afterCash = addCashPaymentToInvoice(rawState, "inv-sale-1", {
+      amount: 4_000_000,
+      accountId: "acc-bank",
+      date: "1403/01/12",
+      note: "پرداخت نقدی کارت‌خوان",
+    });
+
+    // Bank account should have received 4,000,000 -> 1,000,000 + 4,000,000 = 5,000,000
+    const bankAccount = afterCash.nextState.accounts.find(a => a.id === "acc-bank");
+    expect(bankAccount?.balance).toBe(5_000_000);
+
+    // Invoice should now have paidAmount = 4,000,000 and status = "تسویه جزئی"
+    const invAfterCash = afterCash.nextState.invoices.find(i => i.id === "inv-sale-1");
+    expect(invAfterCash?.paidAmount).toBe(4_000_000);
+    expect(invAfterCash?.status).toBe("تسویه جزئی");
+
+    // 2. Now receive a check of 6,000,000 for the customer
+    const stateWithCheck: typeof rawState = {
+      ...afterCash.nextState,
+      checks: [{
+        id: "chk-1",
+        number: "۷۷۸۸۹۹",
+        partyId: "p-customer",
+        amount: 6_000_000,
+        dueDate: "1403/01/20",
+        status: "نزد ما",
+        receivedDate: "1403/01/10",
+      }],
+    };
+
+    // FIFO check settlement should now allocate remaining 6,000,000 from the check
+    const settlements = settleChecksFIFO(
+      stateWithCheck.checks,
+      stateWithCheck.invoices,
+      stateWithCheck.paymentRules,
+      stateWithCheck.settings.dayBasis,
+      [],
+      stateWithCheck.transactions
+    );
+
+    expect(settlements).toHaveLength(1);
+    expect(settlements[0].invoiceId).toBe("inv-sale-1");
+    expect(settlements[0].principalAmount).toBe(6_000_000);
+
+    // 3. rebuildCheckAllocations should mark invoice as 100% settled (4M cash + 6M check = 10M total)
+    const fullyAllocated = rebuildCheckAllocations(stateWithCheck);
+    const settledInv = fullyAllocated.invoices.find(i => i.id === "inv-sale-1");
+    expect(settledInv?.paidAmount).toBe(10_000_000);
+    expect(settledInv?.status).toBe("تسویه شده");
+
+    // 4. Customer balance: while check is uncleared ("نزد ما"), customer is debtor for the uncleared check portion (6M)
+    const personBalanceUncleared = calculatePersonUnsettledInvoiceBalance(
+      fullyAllocated.invoices,
+      "p-customer",
+      fullyAllocated.checks
+    );
+    expect(personBalanceUncleared.amount).toBe(6_000_000);
+    expect(personBalanceUncleared.label).toBe("بدهکار به کارگاه");
+
+    // Once the check is cleared ("وصول شده"), customer is 100% settled (0 debt)
+    const clearedChecks = fullyAllocated.checks.map(c => ({ ...c, status: "وصول شده" as const }));
+    const personBalanceCleared = calculatePersonUnsettledInvoiceBalance(
+      fullyAllocated.invoices,
+      "p-customer",
+      clearedChecks
+    );
+    expect(personBalanceCleared.amount).toBe(0);
+
+    // 5. Deleting the cash payment should revert the account and mark invoice partial (only 6M check remaining)
+    const txn = afterCash.nextState.transactions.find(t => t.targetInvoiceId === "inv-sale-1");
+    expect(txn).toBeDefined();
+    const afterDelete = deleteCashPaymentFromInvoice(fullyAllocated, txn!.id);
+    const bankAfterDelete = afterDelete.nextState.accounts.find(a => a.id === "acc-bank");
+    expect(bankAfterDelete?.balance).toBe(1_000_000);
+    const invAfterDelete = afterDelete.nextState.invoices.find(i => i.id === "inv-sale-1");
+    expect(invAfterDelete?.paidAmount).toBe(6_000_000);
+    expect(invAfterDelete?.status).toBe("تسویه جزئی");
+  });
+});
+
