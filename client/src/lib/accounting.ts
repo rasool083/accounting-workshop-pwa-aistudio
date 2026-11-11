@@ -2284,7 +2284,7 @@ export interface FIFOSettlementBalance {
 // Interest and unit-conversion calculations can leave a harmless fraction of
 // a currency unit. Treat values below one cent/toman as zero so FIFO can
 // continue to the next invoice instead of stopping on floating-point residue.
-const FIFO_EPSILON = 0.01;
+export const FIFO_EPSILON = 0.01;
 
 function principalCollectedForInvoice(
   invoiceAmount: number,
@@ -2297,6 +2297,86 @@ function principalCollectedForInvoice(
       ? invoiceAmount
       : collected
   );
+}
+
+/**
+ * Calculates total cash payments allocated to each invoice.
+ * Supports:
+ * 1. Direct cash receipts/transactions linked via targetInvoiceId
+ * 2. Unassigned cash receipts from party allocated FIFO to open sales invoices of that party
+ */
+export function getInvoiceCashPayments(
+  invoices: Invoice[],
+  transactions: Transaction[] = []
+): Map<string, number> {
+  const eligibleInvoices = [...invoices]
+    .filter(invoice => invoice.type === "فروش" && invoice.status !== "باطل")
+    .sort(
+      (a, b) =>
+        jalaliDateKey(a.date).localeCompare(jalaliDateKey(b.date)) ||
+        a.id.localeCompare(b.id)
+    );
+
+  const cashPaidByInvoice = new Map<string, number>();
+
+  // 1. Direct cash payments linked to specific invoice
+  for (const invoice of eligibleInvoices) {
+    const directCashSum = (transactions || [])
+      .filter(
+        t =>
+          t.targetInvoiceId === invoice.id &&
+          t.status !== "باطل" &&
+          (t.type === "دریافت" || t.type === "فروش" || t.type === "درآمد")
+      )
+      .reduce((sum, t) => sum + t.amount, 0);
+    cashPaidByInvoice.set(invoice.id, directCashSum);
+  }
+
+  // 2. Unassigned cash receipts from party allocated FIFO to open sales invoices of that party
+  const unassignedCash = (transactions || [])
+    .filter(
+      t =>
+        !t.targetInvoiceId &&
+        t.status !== "باطل" &&
+        (t.type === "دریافت" || t.type === "فروش" || t.type === "درآمد") &&
+        (t.partyId || t.party)
+    )
+    .sort(
+      (a, b) =>
+        jalaliDateKey(a.date).localeCompare(jalaliDateKey(b.date)) ||
+        a.id.localeCompare(b.id)
+    );
+
+  const remainingByInvoice = new Map(
+    eligibleInvoices.map(invoice => {
+      const cashPaid = cashPaidByInvoice.get(invoice.id) || 0;
+      return [invoice.id, Math.max(0, invoice.amount - cashPaid)];
+    })
+  );
+
+  for (const t of unassignedCash) {
+    let unassignedRemaining = t.amount;
+    for (const invoice of eligibleInvoices) {
+      if (unassignedRemaining <= FIFO_EPSILON) break;
+      const isSameParty =
+        (t.partyId && invoice.partyId === t.partyId) ||
+        (t.party && invoice.partyId === t.party);
+      if (!isSameParty) continue;
+
+      const currentRem = remainingByInvoice.get(invoice.id) || 0;
+      if (currentRem <= FIFO_EPSILON) continue;
+
+      const toApply = Math.min(currentRem, unassignedRemaining);
+      remainingByInvoice.set(invoice.id, currentRem - toApply);
+      cashPaidByInvoice.set(
+        invoice.id,
+        (cashPaidByInvoice.get(invoice.id) || 0) + toApply
+      );
+      unassignedRemaining -= toApply;
+    }
+  }
+
+  return cashPaidByInvoice;
 }
 
 export function settleChecksFIFO(
@@ -2331,18 +2411,7 @@ export function settleChecksFIFO(
         a.id.localeCompare(b.id)
     );
 
-  const cashPaidByInvoice = new Map<string, number>();
-  for (const invoice of eligibleInvoices) {
-    const cashSum = (transactions || [])
-      .filter(
-        t =>
-          t.targetInvoiceId === invoice.id &&
-          t.status !== "باطل" &&
-          (t.type === "دریافت" || t.type === "فروش" || t.type === "درآمد")
-      )
-      .reduce((sum, t) => sum + t.amount, 0);
-    cashPaidByInvoice.set(invoice.id, cashSum);
-  }
+  const cashPaidByInvoice = getInvoiceCashPayments(eligibleInvoices, transactions);
 
   const remainingByInvoice = new Map(
     eligibleInvoices.map(invoice => {
@@ -2870,7 +2939,9 @@ export function buildCollectionProfitReport(state: AppState): CollectionProfitRe
     state.checks,
     state.invoices,
     state.paymentRules,
-    state.settings.dayBasis
+    state.settings.dayBasis,
+    state.checkGroupAllocations || [],
+    state.transactions || []
   );
   settlements.forEach(allocation => {
     const invoice = state.invoices.find(item => item.id === allocation.invoiceId);
@@ -2910,9 +2981,12 @@ export function buildCollectionProfitReport(state: AppState): CollectionProfitRe
 export function allocateCheckFIFO(
   check: Check,
   invoices: Invoice[],
-  paymentRules: PaymentRule[] = []
+  paymentRules: PaymentRule[] = [],
+  dayBasis: number | "شمسی" = 30,
+  checkGroupAllocations: CheckGroupAllocation[] = [],
+  transactions: Transaction[] = []
 ) {
-  return settleChecksFIFO([check], invoices, paymentRules).map(item => ({
+  return settleChecksFIFO([check], invoices, paymentRules, dayBasis, checkGroupAllocations, transactions).map(item => ({
     invoice: invoices.find(invoice => invoice.id === item.invoiceId)!,
     allocation: item.amount,
     principalAmount: item.principalAmount,
@@ -2931,7 +3005,8 @@ export function applyCheckFIFO(state: AppState, check: Check) {
     state.invoices,
     state.paymentRules,
     state.settings.dayBasis,
-    state.checkGroupAllocations || []
+    state.checkGroupAllocations || [],
+    state.transactions || []
   );
   const byInvoice = new Map<string, FIFOSettlement[]>();
   settlements.forEach(item =>
@@ -2941,6 +3016,10 @@ export function applyCheckFIFO(state: AppState, check: Check) {
     ])
   );
   const now = new Date().toISOString();
+  const cashPaidByInvoice = getInvoiceCashPayments(
+    state.invoices,
+    state.transactions || []
+  );
   const invoices = state.invoices.map(invoice => {
     if (
       invoice.partyId !== check.partyId ||
@@ -2949,7 +3028,9 @@ export function applyCheckFIFO(state: AppState, check: Check) {
     )
       return invoice;
     const rows = byInvoice.get(invoice.id) || [];
-    const paidAmount = principalCollectedForInvoice(invoice.amount, rows);
+    const checkPrincipal = principalCollectedForInvoice(invoice.amount, rows);
+    const cashPaid = cashPaidByInvoice.get(invoice.id) || 0;
+    const paidAmount = Math.min(invoice.amount, cashPaid + checkPrincipal);
     return {
       ...invoice,
       paidAmount,
@@ -2962,9 +3043,9 @@ export function applyCheckFIFO(state: AppState, check: Check) {
         allocatedAt: now,
       })),
       status:
-        paidAmount >= invoice.amount
+        paidAmount >= invoice.amount - FIFO_EPSILON
           ? ("تسویه شده" as const)
-          : paidAmount > 0
+          : paidAmount > FIFO_EPSILON
             ? ("تسویه جزئی" as const)
             : ("باز" as const),
     };
@@ -2989,18 +3070,15 @@ export function rebuildCheckAllocations(state: AppState): AppState {
     ]);
   });
   const now = new Date().toISOString();
+  const cashPaidByInvoice = getInvoiceCashPayments(
+    state.invoices,
+    state.transactions || []
+  );
   const invoices = state.invoices.map(invoice => {
     if (invoice.type !== "فروش" || invoice.status === "باطل") return invoice;
     const rows = byInvoice.get(invoice.id) || [];
     const checkPrincipal = principalCollectedForInvoice(invoice.amount, rows);
-    const cashPaid = (state.transactions || [])
-      .filter(
-        t =>
-          t.targetInvoiceId === invoice.id &&
-          t.status !== "باطل" &&
-          (t.type === "دریافت" || t.type === "فروش" || t.type === "درآمد")
-      )
-      .reduce((sum, t) => sum + t.amount, 0);
+    const cashPaid = cashPaidByInvoice.get(invoice.id) || 0;
     const paidAmount = Math.min(invoice.amount, cashPaid + checkPrincipal);
     return {
       ...invoice,

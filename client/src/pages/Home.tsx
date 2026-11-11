@@ -80,6 +80,8 @@ import {
   calculateEffectiveProfitForAllocation,
   buildCollectionProfitReport,
   settleChecksFIFO,
+  FIFO_EPSILON,
+  getInvoiceCashPayments,
   getSettlementBalances,
   allocateCheckFIFO,
   rebuildCheckAllocations,
@@ -1713,7 +1715,8 @@ function Invoices({
         state.invoices,
         state.paymentRules,
         state.settings.dayBasis,
-        state.checkGroupAllocations || []
+        state.checkGroupAllocations || [],
+        state.transactions || []
       ),
     [
       state.checks,
@@ -1721,6 +1724,7 @@ function Invoices({
       state.paymentRules,
       state.settings.dayBasis,
       state.checkGroupAllocations,
+      state.transactions,
     ]
   );
   const allocationBalances = useMemo(
@@ -7695,7 +7699,9 @@ function Checks({
     state.checks,
     state.invoices,
     state.paymentRules,
-    state.settings.dayBasis
+    state.settings.dayBasis,
+    state.checkGroupAllocations || [],
+    state.transactions || []
   );
   const allocationBalances = useMemo(
     () =>
@@ -9101,7 +9107,13 @@ function MonthClose({
     partyChecks,
     partyInvoices,
     state.paymentRules,
-    state.settings.dayBasis
+    state.settings.dayBasis,
+    state.checkGroupAllocations || [],
+    state.transactions || []
+  );
+  const cashPaidByInvoice = getInvoiceCashPayments(
+    partyInvoices,
+    state.transactions || []
   );
   const allValidSalesTotal = state.invoices
     .filter(invoice => invoice.type === "فروش" && invoice.status !== "باطل")
@@ -9117,7 +9129,12 @@ function MonthClose({
   const settlement = new Map<
     string,
     {
+      gross: number;
+      discount: number;
       base: number;
+      cashPaid: number;
+      checkAmount: number;
+      checkPrincipal: number;
       value: number;
       remainingBase: number;
       collected: number;
@@ -9128,73 +9145,129 @@ function MonthClose({
     month: string;
     number: string;
     date: string;
+    gross: number;
+    discount: number;
     base: number;
+    cashPaid: number;
+    checkAmount: number;
+    checkPrincipal: number;
     value: number;
     remainingBase: number;
     collected: number;
     profit: number;
+    status: "تسویه شده" | "تسویه جزئی" | "باز";
   }> = [];
+
   partyInvoices.forEach(invoice => {
+    const gross =
+      invoice.items && invoice.items.length > 0
+        ? invoice.items.reduce((sum, item) => sum + (item.total || 0), 0)
+        : invoice.amount + (invoice.discountAmount || 0);
+    const discount =
+      invoice.discountAmount || Math.max(0, gross - invoice.amount);
+    const base = invoice.amount;
+    const cashPaid = cashPaidByInvoice.get(invoice.id) || 0;
+
     const invoiceSettlements = fifoSettlements.filter(
       item => item.invoiceId === invoice.id
     );
-    const collected = invoiceSettlements.reduce(
+    const checkAmount = invoiceSettlements.reduce(
       (sum, item) => sum + item.amount,
       0
     );
-    const profit = invoiceSettlements.reduce(
-      (sum, item) => sum + item.profit,
-      0
-    );
-    const principalCollected = invoiceSettlements.reduce(
+    const checkPrincipal = invoiceSettlements.reduce(
       (sum, item) => sum + item.principalAmount,
       0
     );
-    const baseRemaining = Math.max(0, invoice.amount - principalCollected);
-    const todayCheck = {
-      id: "today",
-      number: "",
-      partyId: invoice.partyId,
-      dueDate: todayJalali(),
-      receivedDate: invoice.date,
-      amount: 0,
-      status: "نزد ما" as const,
-      bank: "",
-    };
-    const today = calculateLateProfit(
-      todayCheck,
-      state.paymentRules.find(item => item.id === invoice.paymentRuleId) ||
-        state.paymentRules.find(item => item.active),
-      invoice.date,
-      baseRemaining,
-      state.settings.dayBasis
+    const checkProfit = invoiceSettlements.reduce(
+      (sum, item) => sum + item.profit,
+      0
     );
+
+    const principalSettled = Math.min(base, cashPaid + checkPrincipal);
+    const baseRemaining = Math.max(0, base - principalSettled);
+
+    let lateProfit = 0;
+    let todayValue = baseRemaining;
+
+    if (baseRemaining > FIFO_EPSILON) {
+      const todayCheck = {
+        id: "today",
+        number: "",
+        partyId: invoice.partyId,
+        dueDate: todayJalali(),
+        receivedDate: invoice.date,
+        amount: 0,
+        status: "نزد ما" as const,
+        bank: "",
+      };
+      const today = calculateLateProfit(
+        todayCheck,
+        state.paymentRules.find(item => item.id === invoice.paymentRuleId) ||
+          state.paymentRules.find(item => item.active),
+        invoice.date,
+        baseRemaining,
+        state.settings.dayBasis
+      );
+      lateProfit = today.profit;
+      todayValue = today.remainingBase + today.profit;
+    } else {
+      todayValue = 0;
+      lateProfit = 0;
+    }
+
+    const totalCollected = cashPaid + checkAmount;
+    const totalProfit = checkProfit + lateProfit;
+    const invoiceStatus: "تسویه شده" | "تسویه جزئی" | "باز" =
+      baseRemaining <= FIFO_EPSILON
+        ? "تسویه شده"
+        : principalSettled > FIFO_EPSILON
+          ? "تسویه جزئی"
+          : "باز";
+
     const key = invoice.date.slice(0, 7);
     const previous = settlement.get(key) || {
+      gross: 0,
+      discount: 0,
       base: 0,
+      cashPaid: 0,
+      checkAmount: 0,
+      checkPrincipal: 0,
       value: 0,
       remainingBase: 0,
       collected: 0,
       profit: 0,
     };
     settlement.set(key, {
-      base: previous.base + invoice.amount,
-      value: previous.value + today.remainingBase + today.profit,
-      remainingBase: previous.remainingBase + today.remainingBase,
-      collected: previous.collected + collected,
-      profit: previous.profit + profit + today.profit,
+      gross: previous.gross + gross,
+      discount: previous.discount + discount,
+      base: previous.base + base,
+      cashPaid: previous.cashPaid + cashPaid,
+      checkAmount: previous.checkAmount + checkAmount,
+      checkPrincipal: previous.checkPrincipal + checkPrincipal,
+      value: previous.value + todayValue,
+      remainingBase: previous.remainingBase + baseRemaining,
+      collected: previous.collected + totalCollected,
+      profit: previous.profit + totalProfit,
     });
     details.push({
       month: key,
       number: invoice.number,
       date: invoice.date,
-      base: invoice.amount,
-      value: today.remainingBase + today.profit,
-      remainingBase: today.remainingBase,
-      collected,
-      profit: profit + today.profit,
+      gross,
+      discount,
+      base,
+      cashPaid,
+      checkAmount,
+      checkPrincipal,
+      value: todayValue,
+      remainingBase: baseRemaining,
+      collected: totalCollected,
+      profit: totalProfit,
+      status: invoiceStatus,
     });
   });
+
   const months = Array.from({ length: 8 }, (_, index) => {
     const key =
       Object.keys(Object.fromEntries(settlement)).sort().reverse()[index] || "";
@@ -9208,22 +9281,38 @@ function MonthClose({
       : null;
   }).filter(Boolean) as Array<{
     month: string;
+    gross: number;
+    discount: number;
     base: number;
+    cashPaid: number;
+    checkAmount: number;
+    checkPrincipal: number;
     value: number;
     remainingBase: number;
     collected: number;
     profit: number;
   }>;
+
+  const totalGross = months.reduce((sum, row) => sum + row.gross, 0);
+  const totalDiscount = months.reduce((sum, row) => sum + row.discount, 0);
   const totalBase = months.reduce((sum, row) => sum + row.base, 0);
+  const totalCashPaid = months.reduce((sum, row) => sum + row.cashPaid, 0);
+  const totalCheckAmount = months.reduce((sum, row) => sum + row.checkAmount, 0);
+  const totalCheckPrincipal = months.reduce(
+    (sum, row) => sum + row.checkPrincipal,
+    0
+  );
   const totalValue = months.reduce((sum, row) => sum + row.value, 0);
   const totalRemainingBase = months.reduce(
     (sum, row) => sum + row.remainingBase,
     0
   );
   const totalCollected = months.reduce((sum, row) => sum + row.collected, 0);
+  const totalProfit = months.reduce((sum, row) => sum + row.profit, 0);
+
   function downloadDetails() {
     const header =
-      "ماه,شماره فاکتور,تاریخ,مجموع فروش پایه,ارزش امروز,باقیمانده اصل امروز,مبلغ چک تخصیص‌یافته,هزینه دیرکرد";
+      "ماه,شماره فاکتور,تاریخ,مبلغ ناخالص,تخفیف,مجموع فروش پایه,پرداخت نقدی,مبلغ چک تخصیص‌یافته,باقیمانده اصل امروز,هزینه دیرکرد,ارزش امروز,وضعیت تسویه";
     const csv = [
       header,
       ...details.map(row =>
@@ -9231,11 +9320,15 @@ function MonthClose({
           row.month,
           row.number,
           row.date,
+          row.gross,
+          row.discount,
           row.base,
-          row.value,
+          row.cashPaid,
+          row.checkAmount,
           row.remainingBase,
-          row.collected,
           row.profit,
+          row.value,
+          row.status,
         ].join(",")
       ),
     ].join("\n");
@@ -9252,7 +9345,7 @@ function MonthClose({
       <PageIntro
         kicker="کنترل پایان دوره"
         title="بستن ماه"
-        description="مشتری را انتخاب کنید؛ هشت ماه اخیر بدون وابستگی به یک فاکتور یا چک، با تخصیص FIFO و هزینهٔ روزشمار محاسبه می‌شود."
+        description="مشتری را انتخاب کنید؛ هشت ماه اخیر با احتساب تخفیفات، پرداخت‌های نقدی و تخصیص چک‌ها به روش FIFO و هزینهٔ دیرکرد روزشمار محاسبه می‌شود."
         actionLabel={closed ? "ثبت شده" : "ثبت بستن ماه"}
         onAction={() => {
           if (closed || !partyId) return;
@@ -9265,7 +9358,7 @@ function MonthClose({
                   id: createId("month-close"),
                   at: new Date().toISOString(),
                   action: "MONTH_CLOSE",
-                  note: `بستن ماه مشتری ${personName(state, partyId)}؛ اصل ${totalBase}، ارزش امروز ${totalValue}`,
+                  note: `بستن ماه مشتری ${personName(state, partyId)}؛ فروش پایه ${totalBase}، نقد ${totalCashPaid}، چک ${totalCheckAmount}، باقیمانده اصل ${totalRemainingBase}، ارزش امروز ${totalValue}`,
                 },
               ],
             },
@@ -9315,8 +9408,7 @@ function MonthClose({
             ))}
         </select>
         <span className="close-hint">
-          نرخ دیرکرد از شرایط پرداخت فاکتور خوانده می‌شود؛ چک‌های بزرگ‌تر به
-          فاکتورهای قدیمی‌تر شکسته می‌شوند.
+          پرداخت‌های نقدی ابتدا از اصل فاکتور کسر می‌شوند؛ مابقی از طریق چک‌های دریافتی به روش FIFO و با نرخ دیرکرد شرایط پرداخت فاکتور تسویه می‌گردد.
         </span>
       </div>
       <div className="scope-audit panel">
@@ -9336,30 +9428,52 @@ function MonthClose({
       </div>
       <section className="metric-grid">
         <MetricCard
-          label="مجموع فروش پایه"
+          label="مجموع فروش خالص (پایه)"
           value={formatMoney(totalBase, state.settings.currency)}
-          helper="اصل فاکتورهای مشتری"
+          helper={
+            totalDiscount > 0
+              ? `ناخالص: ${formatMoney(totalGross, state.settings.currency)} · تخفیف: ${formatMoney(totalDiscount, state.settings.currency)}`
+              : "اصل فاکتورهای خالص مشتری"
+          }
           icon={<FileText size={20} />}
           tone="indigo"
         />
         <MetricCard
-          label="ارزش باقیمانده امروز"
-          value={formatMoney(totalValue, state.settings.currency)}
-          helper="اصل با هزینهٔ روزشمار"
-          icon={<Percent size={20} />}
-          tone="violet"
+          label="پرداخت‌های نقدی و بانکی"
+          value={formatMoney(totalCashPaid, state.settings.currency)}
+          helper="تسویه نقدی فوری فاکتورها"
+          icon={<Banknote size={20} />}
+          tone="mint"
+        />
+        <MetricCard
+          label="چک‌های تخصیص‌یافته"
+          value={formatMoney(totalCheckAmount, state.settings.currency)}
+          helper={`${formatMoney(totalCheckPrincipal, state.settings.currency)} اصل پوشش‌یافته`}
+          icon={<WalletCards size={20} />}
+          tone="blue"
         />
         <MetricCard
           label="باقیمانده اصل امروز"
           value={formatMoney(totalRemainingBase, state.settings.currency)}
-          helper="پس از کسر چک‌ها"
+          helper="اصل تسویه‌نشده پس از نقد و چک"
           icon={<WalletCards size={20} />}
           tone="amber"
         />
         <MetricCard
-          label="درصد وصول"
+          label="ارزش با دیرکرد امروز"
+          value={formatMoney(totalValue, state.settings.currency)}
+          helper={
+            totalProfit > 0
+              ? `شامل ${formatMoney(totalProfit, state.settings.currency)} دیرکرد روزشمار`
+              : "بدون هزینه دیرکرد"
+          }
+          icon={<Percent size={20} />}
+          tone="violet"
+        />
+        <MetricCard
+          label="درصد وصول کل"
           value={`${formatNumber(totalBase ? ((totalBase - totalRemainingBase) / totalBase) * 100 : 0)}٪`}
-          helper={`${formatMoney(totalCollected, state.settings.currency)} چک تخصیص‌یافته`}
+          helper={`${formatMoney(totalCashPaid + totalCheckPrincipal, state.settings.currency)} از ${formatMoney(totalBase, state.settings.currency)} تسویه شده`}
           icon={<Check size={20} />}
           tone="mint"
         />
@@ -9385,10 +9499,14 @@ function MonthClose({
             <thead>
               <tr>
                 <th>ماه</th>
-                <th>مجموع فروش (پایه)</th>
-                <th>ارزش امروز</th>
-                <th>باقیمانده اصل امروز</th>
+                <th>فروش ناخالص</th>
+                <th>تخفیف</th>
+                <th>فروش پایه (خالص)</th>
+                <th>پرداخت نقدی</th>
+                <th>چک تخصیص‌یافته</th>
+                <th>باقیمانده اصل</th>
                 <th>هزینهٔ دیرکرد</th>
+                <th>ارزش امروز</th>
                 <th>درصد وصول</th>
               </tr>
             </thead>
@@ -9399,14 +9517,50 @@ function MonthClose({
                     <td>
                       <strong>{row.month}</strong>
                     </td>
-                    <td>{formatMoney(row.base, state.settings.currency)}</td>
-                    <td>{formatMoney(row.value, state.settings.currency)}</td>
+                    <td>{formatMoney(row.gross, state.settings.currency)}</td>
                     <td>
-                      {formatMoney(row.remainingBase, state.settings.currency)}
+                      {row.discount > 0 ? (
+                        <span className="text-amber-700 font-medium">
+                          {formatMoney(row.discount, state.settings.currency)}
+                        </span>
+                      ) : (
+                        <span className="muted-cell">-</span>
+                      )}
+                    </td>
+                    <td>{formatMoney(row.base, state.settings.currency)}</td>
+                    <td>
+                      {row.cashPaid > 0 ? (
+                        <span className="text-emerald-700 font-medium">
+                          {formatMoney(row.cashPaid, state.settings.currency)}
+                        </span>
+                      ) : (
+                        <span className="muted-cell">-</span>
+                      )}
+                    </td>
+                    <td>
+                      {row.checkAmount > 0 ? (
+                        formatMoney(row.checkAmount, state.settings.currency)
+                      ) : (
+                        <span className="muted-cell">-</span>
+                      )}
+                    </td>
+                    <td>
+                      <strong className={row.remainingBase > 0 ? "text-amber-800" : "text-slate-600"}>
+                        {formatMoney(row.remainingBase, state.settings.currency)}
+                      </strong>
                     </td>
                     <td>{formatMoney(row.profit, state.settings.currency)}</td>
+                    <td>{formatMoney(row.value, state.settings.currency)}</td>
                     <td>
-                      <span className="status-pill status-success">
+                      <span
+                        className={`status-pill ${
+                          row.remainingBase <= 0.01
+                            ? "status-success"
+                            : row.cashPaid + row.checkPrincipal > 0
+                              ? "status-warning"
+                              : "status-danger"
+                        }`}
+                      >
                         {formatNumber(
                           row.base
                             ? ((row.base - row.remainingBase) / row.base) * 100
@@ -9419,15 +9573,56 @@ function MonthClose({
                 ))
               ) : (
                 <tr>
-                  <td colSpan={6}>
+                  <td colSpan={10}>
                     <EmptyState
                       title="داده‌ای برای این مشتری وجود ندارد"
-                      description="فاکتور و چک مشتری را ثبت کنید تا گزارش هشت‌ماهه ساخته شود."
+                      description="فاکتور، پرداخت نقدی و چک مشتری را ثبت کنید تا گزارش هشت‌ماهه ساخته شود."
                     />
                   </td>
                 </tr>
               )}
             </tbody>
+            {months.length > 0 && (
+              <tfoot>
+                <tr className="bg-slate-50 font-bold border-t-2 border-slate-300">
+                  <td>مجموع ۸ ماه</td>
+                  <td>{formatMoney(totalGross, state.settings.currency)}</td>
+                  <td>
+                    {totalDiscount > 0 ? (
+                      <span className="text-amber-700">
+                        {formatMoney(totalDiscount, state.settings.currency)}
+                      </span>
+                    ) : (
+                      "-"
+                    )}
+                  </td>
+                  <td>{formatMoney(totalBase, state.settings.currency)}</td>
+                  <td>
+                    {totalCashPaid > 0 ? (
+                      <span className="text-emerald-700">
+                        {formatMoney(totalCashPaid, state.settings.currency)}
+                      </span>
+                    ) : (
+                      "-"
+                    )}
+                  </td>
+                  <td>{formatMoney(totalCheckAmount, state.settings.currency)}</td>
+                  <td>{formatMoney(totalRemainingBase, state.settings.currency)}</td>
+                  <td>{formatMoney(totalProfit, state.settings.currency)}</td>
+                  <td>{formatMoney(totalValue, state.settings.currency)}</td>
+                  <td>
+                    <span className="status-pill status-success">
+                      {formatNumber(
+                        totalBase
+                          ? ((totalBase - totalRemainingBase) / totalBase) * 100
+                          : 0
+                      )}
+                      ٪
+                    </span>
+                  </td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       </div>
@@ -9437,7 +9632,7 @@ function MonthClose({
             <span className="section-kicker">جزئیات محاسبات</span>
             <h3>محاسبه هر فاکتور</h3>
           </div>
-          <span className="soft-tag">FIFO و هزینهٔ روزشمار</span>
+          <span className="soft-tag">تخفیفات، نقد، چک و دیرکرد روزشمار</span>
         </div>
         <div className="table-wrap">
           <table>
@@ -9446,11 +9641,15 @@ function MonthClose({
                 <th>ماه</th>
                 <th>شماره فاکتور</th>
                 <th>تاریخ</th>
-                <th>پایه</th>
-                <th>ارزش امروز</th>
-                <th>اصل باقیمانده</th>
+                <th>ناخالص</th>
+                <th>تخفیف</th>
+                <th>پایه (خالص)</th>
+                <th>پرداخت نقدی</th>
                 <th>چک تخصیص‌یافته</th>
+                <th>اصل باقیمانده</th>
                 <th>هزینهٔ دیرکرد</th>
+                <th>ارزش امروز</th>
+                <th>وضعیت</th>
               </tr>
             </thead>
             <tbody>
@@ -9464,25 +9663,63 @@ function MonthClose({
                         <strong>{row.number}</strong>
                       </td>
                       <td>{formatDate(row.date)}</td>
-                      <td>{formatMoney(row.base, state.settings.currency)}</td>
-                      <td>{formatMoney(row.value, state.settings.currency)}</td>
+                      <td>{formatMoney(row.gross, state.settings.currency)}</td>
                       <td>
-                        {formatMoney(
-                          row.remainingBase,
-                          state.settings.currency
+                        {row.discount > 0 ? (
+                          <span className="text-amber-700 font-medium">
+                            {formatMoney(row.discount, state.settings.currency)}
+                          </span>
+                        ) : (
+                          <span className="muted-cell">-</span>
+                        )}
+                      </td>
+                      <td>{formatMoney(row.base, state.settings.currency)}</td>
+                      <td>
+                        {row.cashPaid > 0 ? (
+                          <span className="text-emerald-700 font-medium">
+                            {formatMoney(row.cashPaid, state.settings.currency)}
+                          </span>
+                        ) : (
+                          <span className="muted-cell">-</span>
                         )}
                       </td>
                       <td>
-                        {formatMoney(row.collected, state.settings.currency)}
+                        {row.checkAmount > 0 ? (
+                          formatMoney(row.checkAmount, state.settings.currency)
+                        ) : (
+                          <span className="muted-cell">-</span>
+                        )}
+                      </td>
+                      <td>
+                        <strong className={row.remainingBase > 0 ? "text-amber-800" : "text-slate-600"}>
+                          {formatMoney(
+                            row.remainingBase,
+                            state.settings.currency
+                          )}
+                        </strong>
                       </td>
                       <td>
                         {formatMoney(row.profit, state.settings.currency)}
+                      </td>
+                      <td>{formatMoney(row.value, state.settings.currency)}</td>
+                      <td>
+                        <span
+                          className={`status-pill ${
+                            row.status === "تسویه شده"
+                              ? "status-success"
+                              : row.status === "تسویه جزئی"
+                                ? "status-warning"
+                                : "status-danger"
+                          }`}
+                        >
+                          {row.status}
+                        </span>
                       </td>
                     </tr>
                   ))
               ) : (
                 <tr>
-                  <td colSpan={8}>
+                  <td colSpan={12}>
                     پس از انتخاب مشتری، جزئیات فاکتورها نمایش داده می‌شود.
                   </td>
                 </tr>

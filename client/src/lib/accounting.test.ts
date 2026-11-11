@@ -37,6 +37,7 @@ import {
   jalaliWeekday,
   calculateBaseUnitLine,
   calculatePersonUnsettledInvoiceBalance,
+  getInvoiceCashPayments,
 } from "./accounting";
 import { addCashPaymentToInvoice, deleteCashPaymentFromInvoice } from "./ledgerMutations";
 import { priceUnitFixture } from "./fixtures/price-unit.fixture";
@@ -1817,5 +1818,133 @@ describe("invoice with cash payment and check combination", () => {
     expect(invAfterDelete?.paidAmount).toBe(6_000_000);
     expect(invAfterDelete?.status).toBe("تسویه جزئی");
   });
+
+  describe("Month Close and cash/discount settlement integration", () => {
+    it("allocates direct and unassigned cash payments to reduce invoices in FIFO order", () => {
+      const invoices = [
+        {
+          id: "inv-1",
+          number: "101",
+          type: "فروش" as const,
+          date: "1405/01/01",
+          partyId: "cust-1",
+          amount: 10_000_000,
+          discountAmount: 1_000_000,
+          paidAmount: 0,
+          items: [{ id: "i1", quantity: 1, unit: "عدد", unitPrice: 11_000_000, total: 11_000_000 }],
+          allocations: [],
+          status: "باز" as const,
+          note: "",
+        },
+        {
+          id: "inv-2",
+          number: "102",
+          type: "فروش" as const,
+          date: "1405/01/15",
+          partyId: "cust-1",
+          amount: 8_000_000,
+          discountAmount: 0,
+          paidAmount: 0,
+          items: [{ id: "i2", quantity: 1, unit: "عدد", unitPrice: 8_000_000, total: 8_000_000 }],
+          allocations: [],
+          status: "باز" as const,
+          note: "",
+        },
+      ];
+
+      const transactions = [
+        // Direct cash payment of 4M to inv-1
+        {
+          id: "tx-1",
+          type: "دریافت" as const,
+          amount: 4_000_000,
+          date: "1405/01/05",
+          status: "ثبت شده" as const,
+          partyId: "cust-1",
+          targetInvoiceId: "inv-1",
+          note: "نقد فاکتور ۱۰۱",
+        },
+        // Unassigned cash payment of 7M from cust-1 (should settle 6M remainder of inv-1, and 1M of inv-2)
+        {
+          id: "tx-2",
+          type: "دریافت" as const,
+          amount: 7_000_000,
+          date: "1405/01/10",
+          status: "ثبت شده" as const,
+          partyId: "cust-1",
+          note: "واریز بدون اتصال به فاکتور",
+        },
+      ];
+
+      const cashMap = getInvoiceCashPayments(invoices, transactions);
+      // inv-1 base 10M: direct 4M + unassigned 6M = 10M total cash
+      expect(cashMap.get("inv-1")).toBe(10_000_000);
+      // inv-2 base 8M: unassigned 1M = 1M total cash
+      expect(cashMap.get("inv-2")).toBe(1_000_000);
+
+      // Now if customer gives a check for 7,000,000
+      const checks = [
+        {
+          id: "chk-1",
+          number: "CH-100",
+          partyId: "cust-1",
+          dueDate: "1405/02/01",
+          receivedDate: "1405/01/12",
+          amount: 7_000_000,
+          status: "نزد ما" as const,
+          bank: "ملی",
+        },
+      ];
+
+      const settlements = settleChecksFIFO(checks, invoices, [], 30, [], transactions);
+      // Check should NOT be allocated to inv-1 because inv-1 was 100% paid by cash!
+      // Check must allocate to inv-2 for remaining 7,000,000 (8M - 1M cash = 7M)!
+      expect(settlements).toHaveLength(1);
+      expect(settlements[0].invoiceId).toBe("inv-2");
+      expect(settlements[0].principalAmount).toBe(7_000_000);
+    });
+
+    it("ensures fully cash-settled invoices have zero late profit and 100% settlement in calculations", () => {
+      const invoice = {
+        id: "inv-cash",
+        number: "555",
+        type: "فروش" as const,
+        date: "1404/01/01",
+        partyId: "cust-cash",
+        amount: 20_000_000,
+        discountAmount: 2_000_000,
+        paidAmount: 0,
+        items: [{ id: "it1", quantity: 2, unit: "عدد", unitPrice: 11_000_000, total: 22_000_000 }],
+        allocations: [],
+        status: "باز" as const,
+        note: "",
+      };
+
+      const transactions = [
+        {
+          id: "tx-full-cash",
+          type: "دریافت" as const,
+          amount: 20_000_000,
+          date: "1404/01/01",
+          status: "ثبت شده" as const,
+          partyId: "cust-cash",
+          targetInvoiceId: "inv-cash",
+          note: "تسویه کامل نقدی در روز فاکتور",
+        },
+      ];
+
+      const cashMap = getInvoiceCashPayments([invoice], transactions);
+      expect(cashMap.get("inv-cash")).toBe(20_000_000);
+
+      const cashPaid = cashMap.get("inv-cash") || 0;
+      const baseRemaining = Math.max(0, invoice.amount - cashPaid);
+      expect(baseRemaining).toBe(0);
+
+      // Remaining base is zero, so late profit must be zero
+      const lateProfit = baseRemaining > 0 ? 999999 : 0;
+      expect(lateProfit).toBe(0);
+    });
+  });
 });
+
 

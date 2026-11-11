@@ -3084,7 +3084,8 @@ export function CheckDetailDialog({
       state.invoices,
       state.paymentRules,
       state.settings.dayBasis,
-      state.checkGroupAllocations || []
+      state.checkGroupAllocations || [],
+      state.transactions || []
     ).filter(item => item.checkId === currentCheck.id);
   }, [state, currentCheck.id, isIssued]);
 
