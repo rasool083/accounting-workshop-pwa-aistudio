@@ -41,6 +41,10 @@ import {
   jalaliDateKey,
   personName,
   partyBalanceDescriptor,
+  buildPartyLedgerStatement,
+  getInvoiceCashPaymentBreakdown,
+  getPurchaseCashPaymentBreakdown,
+  getTransactionTargetInvoiceIds,
   settleChecksFIFO,
   todayJalali,
 } from "@/lib/accounting";
@@ -1137,127 +1141,10 @@ export function PartyLedgerDialog({
   );
 
   // Unified Chronological Statement (صورت‌حساب دفتر معین)
-  const statementRows = useMemo(() => {
-    interface StatementEvent {
-      id: string;
-      date: string;
-      rawDate: string;
-      docType: string;
-      reference: string;
-      note: string;
-      debit: number; // افزایش طلب کارگاه از شخص
-      credit: number; // افزایش بستانکاری شخص / پرداختی شخص
-    }
-
-    const events: StatementEvent[] = [];
-
-    // Invoices
-    personInvoices.forEach(inv => {
-      if (inv.type === "فروش") {
-        events.push({
-          id: `inv-${inv.id}`,
-          date: inv.date,
-          rawDate: inv.date,
-          docType: "فاکتور فروش",
-          reference: `فاکتور شماره ${inv.number}`,
-          note: inv.items?.map(it => it.productId).join("، ") || "فروش کالا/خدمات",
-          debit: inv.amount,
-          credit: 0,
-        });
-      } else {
-        events.push({
-          id: `inv-${inv.id}`,
-          date: inv.date,
-          rawDate: inv.date,
-          docType: "فاکتور خرید",
-          reference: `فاکتور خرید ${inv.number}`,
-          note: inv.items?.map(it => it.productId).join("، ") || "خرید کالا/مواد اولیه",
-          debit: 0,
-          credit: inv.amount,
-        });
-      }
-    });
-
-    // Direct Transactions
-    personTransactions.forEach(t => {
-      if (["دریافت", "درآمد", "دریافت توسط شریک", "دریافت تسویه از شریک"].includes(t.type)) {
-        events.push({
-          id: `tx-${t.id}`,
-          date: t.date,
-          rawDate: t.date,
-          docType: t.type,
-          reference: `رسید دریافت نقدی/بانکی`,
-          note: t.note || "دریافت وجه",
-          debit: 0,
-          credit: t.amount,
-        });
-      } else if (
-        [
-          "پرداخت",
-          "هزینه",
-          "هزینه/خرید توسط شریک",
-          "مساعده/پرداخت به شریک",
-          "پرداخت حقوق",
-        ].includes(t.type)
-      ) {
-        events.push({
-          id: `tx-${t.id}`,
-          date: t.date,
-          rawDate: t.date,
-          docType: t.type,
-          reference: `رسید پرداخت نقدی/بانکی`,
-          note: t.note || "پرداخت وجه",
-          debit: t.amount,
-          credit: 0,
-        });
-      }
-    });
-
-    // Received Checks
-    personChecks.forEach(c => {
-      events.push({
-        id: `chk-${c.id}`,
-        date: c.receivedDate || c.dueDate,
-        rawDate: c.receivedDate || c.dueDate,
-        docType: "چک دریافتی",
-        reference: `چک صیادی ${c.sayadNumber || c.number || "—"} (${c.bank || "بانک"})`,
-        note: `سررسید: ${formatDate(c.dueDate)} · وضعیت: ${c.status}`,
-        debit: 0,
-        credit: c.amount,
-      });
-    });
-
-    // Issued Checks
-    personIssuedChecks.forEach(ic => {
-      events.push({
-        id: `iss-chk-${ic.id}`,
-        date: ic.dueDate,
-        rawDate: ic.dueDate,
-        docType: "چک صادره",
-        reference: `چک صادره کارگاه شماره ${ic.number}`,
-        note: `بابت ${ic.purpose} · وضعیت: ${ic.status}`,
-        debit: ic.amount,
-        credit: 0,
-      });
-    });
-
-    // Sort chronologically from earliest to latest
-    events.sort(
-      (a, b) =>
-        jalaliDateKey(a.rawDate).localeCompare(jalaliDateKey(b.rawDate)) ||
-        a.id.localeCompare(b.id)
-    );
-
-    // Calculate running balance
-    let running = 0;
-    return events.map(e => {
-      running += e.debit - e.credit;
-      return {
-        ...e,
-        runningBalance: running,
-      };
-    });
-  }, [personInvoices, personChecks, personIssuedChecks, personTransactions]);
+  const statementRows = useMemo(
+    () => buildPartyLedgerStatement(state, person.id),
+    [state, person.id]
+  );
 
   // Overall financial totals
   const totalSales = personInvoices
@@ -1458,14 +1345,27 @@ export function PartyLedgerDialog({
                           const invId = row.id.replace(/^inv-/, "");
                           const inv = state.invoices.find(i => i.id === invId);
                           if (inv) setSelectedInvoice(inv);
-                        } else if (row.id.startsWith("chk-")) {
-                          const chkId = row.id.replace(/^chk-/, "");
+                        } else if (row.id.startsWith("chk-rev-") || row.id.startsWith("chk-")) {
+                          const chkId = row.id.replace(/^chk-(rev-)?/, "");
                           const chk = state.checks.find(c => c.id === chkId);
                           if (chk) setSelectedCheck(chk);
-                        } else if (row.id.startsWith("iss-chk-")) {
-                          const chkId = row.id.replace(/^iss-chk-/, "");
+                        } else if (row.id.startsWith("iss-chk-rev-") || row.id.startsWith("iss-chk-")) {
+                          const chkId = row.id.replace(/^iss-chk-(rev-)?/, "");
                           const chk = state.issuedChecks.find(c => c.id === chkId);
                           if (chk) setSelectedCheck(chk as any);
+                        } else if (row.id.startsWith("pp-rev-") || row.id.startsWith("pp-")) {
+                          const ppId = row.id.replace(/^pp-(rev-)?/, "");
+                          const pp = state.purchasePayments.find(p => p.id === ppId);
+                          if (pp?.issuedCheckId) {
+                            const ic = state.issuedChecks.find(c => c.id === pp.issuedCheckId);
+                            if (ic) {
+                              setSelectedCheck(ic as any);
+                              return;
+                            }
+                          }
+                          const alloc = state.purchasePayableAllocations.find(a => a.paymentId === ppId);
+                          const inv = alloc ? state.invoices.find(i => i.id === alloc.invoiceId) : undefined;
+                          if (inv) setSelectedInvoice(inv);
                         } else if (row.id.startsWith("tx-")) {
                           const txId = row.id.replace(/^tx-/, "");
                           const tx = state.transactions.find(t => t.id === txId);
@@ -1908,18 +1808,42 @@ export function InvoiceDetailDialog({
     ? state.people.find(p => p.id === currentInvoice.partyId)
     : undefined;
 
-  // Connected cash and bank payments directly linked to this invoice
+  // Connected & FIFO-allocated cash/bank payments for this invoice
+  const cashBreakdown = useMemo(() => {
+    return currentInvoice.type === "فروش"
+      ? getInvoiceCashPaymentBreakdown(state.invoices, state.transactions || [])
+      : getPurchaseCashPaymentBreakdown(
+          state.invoices,
+          state.transactions || [],
+          state.purchasePayments || []
+        );
+  }, [currentInvoice.type, state.invoices, state.transactions, state.purchasePayments]);
+
   const connectedCashPayments = useMemo(() => {
-    return (state.transactions || []).filter(
-      t =>
-        t.targetInvoiceId === currentInvoice.id &&
-        t.status !== "باطل" &&
-        (t.type === "دریافت" || t.type === "پرداخت" || t.type === "فروش" || t.type === "خرید")
+    const linkedIds = cashBreakdown.txnIdsByInvoice.get(currentInvoice.id) || [];
+    const directIds = new Set(
+      (state.transactions || [])
+        .filter(
+          t =>
+            t.status !== "باطل" &&
+            getTransactionTargetInvoiceIds(t).includes(currentInvoice.id)
+        )
+        .map(t => t.id)
     );
-  }, [state.transactions, currentInvoice.id]);
+    const mergedIds = Array.from(new Set([...linkedIds, ...Array.from(directIds)]));
+    return mergedIds
+      .map(id => (state.transactions || []).find(t => t.id === id))
+      .filter((t): t is Transaction => Boolean(t && t.status !== "باطل"))
+      .map(t => {
+        const allocatedShare =
+          cashBreakdown.allocationsByTxnAndInvoice.get(`${t.id}:${currentInvoice.id}`) ??
+          t.amount;
+        return { txn: t, allocatedAmount: allocatedShare };
+      });
+  }, [cashBreakdown, state.transactions, currentInvoice.id]);
 
   const totalCashPaid = useMemo(() => {
-    return connectedCashPayments.reduce((sum, t) => sum + (t.amount || 0), 0);
+    return connectedCashPayments.reduce((sum, item) => sum + (item.allocatedAmount || 0), 0);
   }, [connectedCashPayments]);
 
   // Compute FIFO check allocations for this invoice (considering cash payments already paid)
@@ -2839,8 +2763,10 @@ export function InvoiceDetailDialog({
                   </tr>
                 </thead>
                 <tbody>
-                  {connectedCashPayments.map((txn, idx) => {
+                  {connectedCashPayments.map(({ txn, allocatedAmount }, idx) => {
                     const acc = state.accounts.find(a => a.id === txn.accountId);
+                    const targets = getTransactionTargetInvoiceIds(txn);
+                    const isShared = targets.length !== 1 || allocatedAmount < txn.amount;
                     return (
                       <tr key={txn.id}>
                         <td>{idx + 1}</td>
@@ -2853,11 +2779,23 @@ export function InvoiceDetailDialog({
                         </td>
                         <td>
                           <span className="badge green">{txn.type}</span>
+                          {isShared && (
+                            <small className="muted-cell" style={{ display: "block" }}>
+                              {targets.length > 1
+                                ? `مشترک بین ${formatNumber(targets.length)} فاکتور`
+                                : "تخصیص خودکار FIFO"}
+                            </small>
+                          )}
                         </td>
                         <td>{txn.trackingCode || "—"}</td>
                         <td>{txn.note || "پرداخت نقدی فاکتور"}</td>
                         <td className="amount-cell" style={{ color: "#15803d" }}>
-                          <strong>{formatMoney(txn.amount, state.settings.currency)}</strong>
+                          <strong>{formatMoney(allocatedAmount, state.settings.currency)}</strong>
+                          {isShared && allocatedAmount !== txn.amount && (
+                            <small className="muted-cell" style={{ display: "block" }}>
+                              از کل سند: {formatMoney(txn.amount, state.settings.currency)}
+                            </small>
+                          )}
                         </td>
                         {onSave && (
                           <td>
@@ -4146,6 +4084,48 @@ export function TransactionDetailDialog({
                 </strong>
               </div>
             )}
+
+            {(() => {
+              const targetIds = getTransactionTargetInvoiceIds(currentTx);
+              const linkedInvoices = state.invoices.filter(inv =>
+                targetIds.includes(inv.id)
+              );
+              if (!linkedInvoices.length) return null;
+              return (
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                    padding: "8px 12px",
+                    background: "#f0fdf4",
+                    border: "1px solid #bbf7d0",
+                    borderRadius: 8,
+                  }}
+                >
+                  <span style={{ color: "#166534", fontWeight: 700, fontSize: "0.8rem" }}>
+                    فاکتورهای متصل ({formatNumber(linkedInvoices.length)} مورد):
+                  </span>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {linkedInvoices.map(inv => (
+                      <span
+                        key={inv.id}
+                        style={{
+                          background: "#ffffff",
+                          border: "1px solid #86efac",
+                          borderRadius: 6,
+                          padding: "3px 8px",
+                          fontSize: "0.78rem",
+                          color: "#14532d",
+                        }}
+                      >
+                        فاکتور {inv.type} شماره {inv.number} ({formatMoney(inv.amount, state.settings.currency)})
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
 
             {transaction.partnerEffect && (
               <div

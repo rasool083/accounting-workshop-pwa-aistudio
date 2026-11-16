@@ -9,6 +9,7 @@ import {
   Product,
   rebuildCheckAllocations,
   rebuildPurchasePayables,
+  getTransactionTargetInvoiceIds,
   releasePurchasePaymentsForInvoice,
   calculateInvoiceAmount,
   calculateBaseUnitLine,
@@ -121,13 +122,14 @@ export function deleteTransactionAndRevert(
     return pr;
   });
 
-  const nextState: AppState = {
+  let nextState: AppState = {
     ...state,
     accounts: nextAccounts,
     products: nextProducts,
     payrollRecords: nextPayrollRecords,
     transactions: state.transactions.filter(t => t.id !== transactionId),
   };
+  nextState = rebuildPurchasePayables(rebuildCheckAllocations(nextState));
 
   return {
     nextState,
@@ -172,7 +174,7 @@ export function editTransactionAndRevert(
     return pr;
   });
 
-  const nextState: AppState = {
+  let nextState: AppState = {
     ...state,
     accounts: nextAccounts,
     products: nextProducts,
@@ -181,6 +183,7 @@ export function editTransactionAndRevert(
       t.id === transactionId ? newTx : t
     ),
   };
+  nextState = rebuildPurchasePayables(rebuildCheckAllocations(nextState));
 
   return {
     nextState,
@@ -821,9 +824,8 @@ export function deleteCashPaymentFromInvoice(
 ): { nextState: AppState; message: string } {
   const txn = state.transactions.find(t => t.id === transactionId);
   if (!txn) throw new Error("تراکنش پرداخت یافت نشد.");
-  const targetInvoice = txn.targetInvoiceId
-    ? state.invoices.find(inv => inv.id === txn.targetInvoiceId)
-    : undefined;
+  const targetIds = getTransactionTargetInvoiceIds(txn);
+  const targetInvoices = state.invoices.filter(inv => targetIds.includes(inv.id));
 
   const nextAccounts = applyAccountEffect(state.accounts, txn, -1);
   let nextState: AppState = {
@@ -832,10 +834,19 @@ export function deleteCashPaymentFromInvoice(
     transactions: state.transactions.filter(t => t.id !== transactionId),
   };
 
-  if (targetInvoice?.type === "فروش" || txn.type === "دریافت") {
+  if (
+    targetInvoices.some(inv => inv.type === "فروش") ||
+    txn.type === "دریافت" ||
+    txn.type === "فروش" ||
+    txn.type === "درآمد"
+  ) {
     nextState = rebuildCheckAllocations(nextState);
   }
-  if (targetInvoice?.type === "خرید" || txn.type === "پرداخت") {
+  if (
+    targetInvoices.some(inv => inv.type === "خرید") ||
+    txn.type === "پرداخت" ||
+    txn.type === "خرید"
+  ) {
     nextState = rebuildPurchasePayables(nextState);
   }
 

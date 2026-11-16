@@ -309,6 +309,7 @@ export interface Transaction {
   party?: string;
   category?: string;
   targetInvoiceId?: string;
+  targetInvoiceIds?: string[];
   trackingCode?: string;
   accountId?: string;
   fromAccountId?: string;
@@ -1256,13 +1257,16 @@ export function normalizeState(input: unknown): AppState {
       ? source.paymentRules
       : seedState.paymentRules,
     transactions: Array.isArray(source.transactions)
-      ? source.transactions.map(txn => ({
-          ...txn,
-          targetInvoiceId:
-            typeof txn.targetInvoiceId === "string" && txn.targetInvoiceId.trim()
-              ? txn.targetInvoiceId.trim()
-              : undefined,
-        }))
+      ? source.transactions.map(txn => {
+          const normalizedTargetIds = getTransactionTargetInvoiceIds(txn);
+          return {
+            ...txn,
+            targetInvoiceId:
+              normalizedTargetIds.length === 1 ? normalizedTargetIds[0] : undefined,
+            targetInvoiceIds:
+              normalizedTargetIds.length > 0 ? normalizedTargetIds : undefined,
+          };
+        })
       : [],
     checks: Array.isArray(source.checks)
       ? source.checks.map(check => ({
@@ -2299,16 +2303,51 @@ function principalCollectedForInvoice(
   );
 }
 
+export function isSyntheticCheckTransaction(
+  t: Pick<Transaction, "id" | "checkId" | "note">
+): boolean {
+  return (
+    (typeof t.note === "string" && t.note.includes("__check:")) ||
+    Boolean(
+      t.checkId &&
+        typeof t.id === "string" &&
+        t.id.startsWith("check-receipt")
+    )
+  );
+}
+
+export function getTransactionTargetInvoiceIds(
+  t: Pick<Transaction, "targetInvoiceId" | "targetInvoiceIds">
+): string[] {
+  const ids = new Set<string>();
+  if (Array.isArray(t.targetInvoiceIds)) {
+    t.targetInvoiceIds.forEach(id => {
+      if (typeof id === "string" && id.trim()) ids.add(id.trim());
+    });
+  }
+  if (typeof t.targetInvoiceId === "string" && t.targetInvoiceId.trim()) {
+    ids.add(t.targetInvoiceId.trim());
+  }
+  return Array.from(ids);
+}
+
+export interface CashPaymentBreakdown {
+  cashPaidByInvoice: Map<string, number>;
+  allocationsByTxnAndInvoice: Map<string, number>;
+  txnIdsByInvoice: Map<string, string[]>;
+}
+
 /**
- * Calculates total cash payments allocated to each invoice.
+ * Calculates cash/bank receipts allocated to each sales invoice.
  * Supports:
- * 1. Direct cash receipts/transactions linked via targetInvoiceId
- * 2. Unassigned cash receipts from party allocated FIFO to open sales invoices of that party
+ * 1. Direct single-invoice receipts (targetInvoiceId / targetInvoiceIds length === 1)
+ * 2. Multi-invoice receipts distributed FIFO across selected targetInvoiceIds
+ * 3. Unassigned receipts from party distributed FIFO across remaining open sales invoices of that party
  */
-export function getInvoiceCashPayments(
+export function getInvoiceCashPaymentBreakdown(
   invoices: Invoice[],
   transactions: Transaction[] = []
-): Map<string, number> {
+): CashPaymentBreakdown {
   const eligibleInvoices = [...invoices]
     .filter(invoice => invoice.type === "فروش" && invoice.status !== "باطل")
     .sort(
@@ -2318,28 +2357,30 @@ export function getInvoiceCashPayments(
     );
 
   const cashPaidByInvoice = new Map<string, number>();
+  const allocationsByTxnAndInvoice = new Map<string, number>();
+  const txnIdsByInvoice = new Map<string, string[]>();
+  const remainingByInvoice = new Map(
+    eligibleInvoices.map(invoice => [invoice.id, Math.max(0, invoice.amount)])
+  );
 
-  // 1. Direct cash payments linked to specific invoice
-  for (const invoice of eligibleInvoices) {
-    const directCashSum = (transactions || [])
-      .filter(
-        t =>
-          t.targetInvoiceId === invoice.id &&
-          t.status !== "باطل" &&
-          (t.type === "دریافت" || t.type === "فروش" || t.type === "درآمد")
-      )
-      .reduce((sum, t) => sum + t.amount, 0);
-    cashPaidByInvoice.set(invoice.id, directCashSum);
-  }
+  const recordTxnLink = (txnId: string, invoiceId: string, amount: number) => {
+    const key = `${txnId}:${invoiceId}`;
+    allocationsByTxnAndInvoice.set(
+      key,
+      (allocationsByTxnAndInvoice.get(key) || 0) + amount
+    );
+    const list = txnIdsByInvoice.get(invoiceId) || [];
+    if (!list.includes(txnId)) {
+      txnIdsByInvoice.set(invoiceId, [...list, txnId]);
+    }
+  };
 
-  // 2. Unassigned cash receipts from party allocated FIFO to open sales invoices of that party
-  const unassignedCash = (transactions || [])
+  const validCashReceipts = (transactions || [])
     .filter(
       t =>
-        !t.targetInvoiceId &&
         t.status !== "باطل" &&
-        (t.type === "دریافت" || t.type === "فروش" || t.type === "درآمد") &&
-        (t.partyId || t.party)
+        !isSyntheticCheckTransaction(t) &&
+        (t.type === "دریافت" || t.type === "فروش" || t.type === "درآمد")
     )
     .sort(
       (a, b) =>
@@ -2347,14 +2388,46 @@ export function getInvoiceCashPayments(
         a.id.localeCompare(b.id)
     );
 
-  const remainingByInvoice = new Map(
-    eligibleInvoices.map(invoice => {
-      const cashPaid = cashPaidByInvoice.get(invoice.id) || 0;
-      return [invoice.id, Math.max(0, invoice.amount - cashPaid)];
-    })
-  );
+  // 1. Single-invoice direct receipts
+  for (const t of validCashReceipts) {
+    const targets = getTransactionTargetInvoiceIds(t);
+    if (targets.length !== 1) continue;
+    const invoiceId = targets[0];
+    if (!remainingByInvoice.has(invoiceId)) continue;
+    cashPaidByInvoice.set(
+      invoiceId,
+      (cashPaidByInvoice.get(invoiceId) || 0) + t.amount
+    );
+    const currentRem = remainingByInvoice.get(invoiceId) || 0;
+    remainingByInvoice.set(invoiceId, Math.max(0, currentRem - t.amount));
+    recordTxnLink(t.id, invoiceId, t.amount);
+  }
 
-  for (const t of unassignedCash) {
+  // 2. Multi-invoice targeted receipts allocated FIFO across selected invoices
+  for (const t of validCashReceipts) {
+    const targets = getTransactionTargetInvoiceIds(t);
+    if (targets.length <= 1) continue;
+    let remainingTxn = t.amount;
+    for (const invoice of eligibleInvoices) {
+      if (remainingTxn <= FIFO_EPSILON) break;
+      if (!targets.includes(invoice.id)) continue;
+      const currentRem = remainingByInvoice.get(invoice.id) || 0;
+      if (currentRem <= FIFO_EPSILON) continue;
+      const toApply = Math.min(currentRem, remainingTxn);
+      remainingByInvoice.set(invoice.id, Math.max(0, currentRem - toApply));
+      cashPaidByInvoice.set(
+        invoice.id,
+        (cashPaidByInvoice.get(invoice.id) || 0) + toApply
+      );
+      recordTxnLink(t.id, invoice.id, toApply);
+      remainingTxn -= toApply;
+    }
+  }
+
+  // 3. Unassigned cash receipts from party allocated FIFO to open sales invoices of that party
+  for (const t of validCashReceipts) {
+    const targets = getTransactionTargetInvoiceIds(t);
+    if (targets.length > 0 || !(t.partyId || t.party)) continue;
     let unassignedRemaining = t.amount;
     for (const invoice of eligibleInvoices) {
       if (unassignedRemaining <= FIFO_EPSILON) break;
@@ -2367,16 +2440,24 @@ export function getInvoiceCashPayments(
       if (currentRem <= FIFO_EPSILON) continue;
 
       const toApply = Math.min(currentRem, unassignedRemaining);
-      remainingByInvoice.set(invoice.id, currentRem - toApply);
+      remainingByInvoice.set(invoice.id, Math.max(0, currentRem - toApply));
       cashPaidByInvoice.set(
         invoice.id,
         (cashPaidByInvoice.get(invoice.id) || 0) + toApply
       );
+      recordTxnLink(t.id, invoice.id, toApply);
       unassignedRemaining -= toApply;
     }
   }
 
-  return cashPaidByInvoice;
+  return { cashPaidByInvoice, allocationsByTxnAndInvoice, txnIdsByInvoice };
+}
+
+export function getInvoiceCashPayments(
+  invoices: Invoice[],
+  transactions: Transaction[] = []
+): Map<string, number> {
+  return getInvoiceCashPaymentBreakdown(invoices, transactions).cashPaidByInvoice;
 }
 
 export function settleChecksFIFO(
@@ -2631,24 +2712,265 @@ export function getSettlementBalances(
   return result;
 }
 
-export function partyBalanceDescriptor(state: AppState, personId: string) {
-  const invoices = state.invoices.filter(
-    invoice => invoice.partyId === personId && invoice.status !== "باطل"
+export interface PartyLedgerEntry {
+  id: string;
+  date: string;
+  rawDate: string;
+  docType: string;
+  reference: string;
+  note: string;
+  debit: number;
+  credit: number;
+  runningBalance: number;
+}
+
+/**
+ * Builds the canonical chronological ledger statement (کاردکس معین) for a party.
+ * Positive runningBalance means the party owes the workshop (طلب از طرف حساب / بدهکار).
+ * Negative runningBalance means the workshop owes the party (بدهی به طرف حساب / بستانکار).
+ */
+export function buildPartyLedgerStatement(
+  state: AppState,
+  personId: string
+): PartyLedgerEntry[] {
+  const events: Array<Omit<PartyLedgerEntry, "runningBalance">> = [];
+
+  // 1. Valid Invoices (Sales debit party, Purchases credit party)
+  state.invoices
+    .filter(inv => inv.partyId === personId && inv.status !== "باطل")
+    .forEach(inv => {
+      if (inv.type === "فروش") {
+        events.push({
+          id: `inv-${inv.id}`,
+          date: inv.date,
+          rawDate: inv.date,
+          docType: "فاکتور فروش",
+          reference: `فاکتور شماره ${inv.number}`,
+          note: inv.note || "فروش کالا/خدمات",
+          debit: inv.amount,
+          credit: 0,
+        });
+      } else {
+        events.push({
+          id: `inv-${inv.id}`,
+          date: inv.date,
+          rawDate: inv.date,
+          docType: "فاکتور خرید",
+          reference: `فاکتور خرید ${inv.number}`,
+          note: inv.note || "خرید کالا/مواد اولیه",
+          debit: 0,
+          credit: inv.amount,
+        });
+      }
+    });
+
+  // 2. Direct Purchase Payments recorded on purchase invoices
+  const coveredIssuedCheckIds = new Set<string>();
+  (state.purchasePayments || [])
+    .filter(p => p.supplierId === personId && p.amount > 0)
+    .forEach(p => {
+      const linkedIssuedCheck = p.issuedCheckId
+        ? state.issuedChecks.find(ic => ic.id === p.issuedCheckId)
+        : undefined;
+      if (linkedIssuedCheck?.status === "باطل") return;
+      if (p.issuedCheckId) coveredIssuedCheckIds.add(p.issuedCheckId);
+
+      const reference = linkedIssuedCheck
+        ? `چک صادره کارگاه شماره ${linkedIssuedCheck.number}`
+        : p.method === "چک مشتری"
+          ? "واگذاری چک مشتری"
+          : `پرداخت خرید (${p.method})`;
+
+      events.push({
+        id: `pp-${p.id}`,
+        date: p.date,
+        rawDate: p.date,
+        docType: `پرداخت خرید (${p.method})`,
+        reference,
+        note: p.note || `تسویه فاکتور خرید (${p.method})`,
+        debit: p.amount,
+        credit: 0,
+      });
+
+      if (linkedIssuedCheck?.status === "برگشتی") {
+        events.push({
+          id: `pp-rev-${p.id}`,
+          date: linkedIssuedCheck.dueDate || p.date,
+          rawDate: linkedIssuedCheck.dueDate || p.date,
+          docType: "برگشت چک صادره",
+          reference: `برگشت چک شماره ${linkedIssuedCheck.number}`,
+          note: "برگشت چک صادره (بازگشت بدهی)",
+          debit: 0,
+          credit: p.amount,
+        });
+      }
+    });
+
+  // 3. Issued Checks directly to beneficiary not already represented by purchasePayments
+  (state.issuedChecks || [])
+    .filter(
+      ic =>
+        ic.beneficiaryPartyId === personId &&
+        ic.status !== "باطل" &&
+        !coveredIssuedCheckIds.has(ic.id)
+    )
+    .forEach(ic => {
+      events.push({
+        id: `iss-chk-${ic.id}`,
+        date: ic.dueDate,
+        rawDate: ic.dueDate,
+        docType: "چک صادره",
+        reference: `چک صادره کارگاه شماره ${ic.number}`,
+        note: `بابت ${ic.purpose} · وضعیت: ${ic.status}`,
+        debit: ic.amount,
+        credit: 0,
+      });
+      if (ic.status === "برگشتی") {
+        events.push({
+          id: `iss-chk-rev-${ic.id}`,
+          date: ic.dueDate,
+          rawDate: ic.dueDate,
+          docType: "برگشت چک صادره",
+          reference: `برگشت چک شماره ${ic.number}`,
+          note: "برگشت چک صادره",
+          debit: 0,
+          credit: ic.amount,
+        });
+      }
+    });
+
+  // 4. Received Checks from party (valid checks credit party; bounced/returned reverse credit)
+  (state.checks || [])
+    .filter(
+      c =>
+        c.partyId === personId &&
+        !["باطل", "جایگزین شده"].includes(c.status)
+    )
+    .forEach(c => {
+      const refLabel = `چک صیادی ${c.sayadNumber || c.number || "—"} (${c.bank || "بانک"})`;
+      events.push({
+        id: `chk-${c.id}`,
+        date: c.receivedDate || c.dueDate,
+        rawDate: c.receivedDate || c.dueDate,
+        docType: "چک دریافتی",
+        reference: refLabel,
+        note: `سررسید: ${c.dueDate || "—"} · وضعیت: ${c.status}`,
+        debit: 0,
+        credit: c.amount,
+      });
+      if (["برگشتی", "عودت داده شده"].includes(c.status)) {
+        events.push({
+          id: `chk-rev-${c.id}`,
+          date: c.dueDate || c.receivedDate,
+          rawDate: c.dueDate || c.receivedDate,
+          docType: c.status === "برگشتی" ? "برگشت چک" : "عودت چک",
+          reference: refLabel,
+          note: `وضعیت: ${c.status} (بازگشت مانده بدهی)`,
+          debit: c.amount,
+          credit: 0,
+        });
+      }
+    });
+
+  // 5. Financial Transactions linked to party (excluding spot inventory ops & synthetic check collection receipts)
+  (state.transactions || [])
+    .filter(
+      t =>
+        t.partyId === personId &&
+        t.status !== "باطل" &&
+        !isSyntheticCheckTransaction(t)
+    )
+    .forEach(t => {
+      if (
+        t.type === "خرید کالا" ||
+        t.type === "فروش کالا" ||
+        t.type === "انتقال بین حساب‌ها"
+      ) {
+        return;
+      }
+
+      if (t.partnerEffect) {
+        const isCredit =
+          t.partnerEffect === "افزایش طلب شریک" ||
+          t.partnerEffect === "کاهش طلب کارگاه از شریک";
+        events.push({
+          id: `tx-${t.id}`,
+          date: t.date,
+          rawDate: t.date,
+          docType: t.type,
+          reference: t.trackingCode ? `کد پیگیری: ${t.trackingCode}` : t.partnerEffect,
+          note: t.note || t.partnerEffect,
+          debit: isCredit ? 0 : t.amount,
+          credit: isCredit ? t.amount : 0,
+        });
+        return;
+      }
+
+      if (
+        [
+          "دریافت",
+          "درآمد",
+          "فروش",
+          "دریافت توسط شریک",
+          "دریافت تسویه از شریک",
+        ].includes(t.type)
+      ) {
+        events.push({
+          id: `tx-${t.id}`,
+          date: t.date,
+          rawDate: t.date,
+          docType: t.type,
+          reference: t.trackingCode
+            ? `رسید دریافت (${t.trackingCode})`
+            : "رسید دریافت نقدی/بانکی",
+          note: t.note || "دریافت وجه",
+          debit: 0,
+          credit: t.amount,
+        });
+      } else if (
+        [
+          "پرداخت",
+          "هزینه",
+          "خرید",
+          "هزینه/خرید توسط شریک",
+          "مساعده/پرداخت به شریک",
+          "پرداخت حقوق",
+        ].includes(t.type)
+      ) {
+        events.push({
+          id: `tx-${t.id}`,
+          date: t.date,
+          rawDate: t.date,
+          docType: t.type,
+          reference: t.trackingCode
+            ? `رسید پرداخت (${t.trackingCode})`
+            : "رسید پرداخت نقدی/بانکی",
+          note: t.note || "پرداخت وجه",
+          debit: t.amount,
+          credit: 0,
+        });
+      }
+    });
+
+  events.sort(
+    (a, b) =>
+      jalaliDateKey(a.rawDate).localeCompare(jalaliDateKey(b.rawDate)) ||
+      a.id.localeCompare(b.id)
   );
-  const salesOutstanding = invoices
-    .filter(invoice => invoice.type === "فروش")
-    .reduce(
-      (sum, invoice) =>
-        sum + Math.max(0, invoice.amount - (invoice.paidAmount || 0)),
-      0
-    );
-  const purchaseTotal = invoices
-    .filter(invoice => invoice.type === "خرید")
-    .reduce((sum, invoice) => sum + invoice.amount, 0);
-  const purchasePaid = state.purchasePayments
-    .filter(payment => payment.supplierId === personId)
-    .reduce((sum, payment) => sum + payment.amount, 0);
-  const net = salesOutstanding - Math.max(0, purchaseTotal - purchasePaid);
+
+  let running = 0;
+  return events.map(e => {
+    running += e.debit - e.credit;
+    return {
+      ...e,
+      runningBalance: running,
+    };
+  });
+}
+
+export function partyBalanceDescriptor(state: AppState, personId: string) {
+  const rows = buildPartyLedgerStatement(state, personId);
+  const net = rows.length ? rows[rows.length - 1].runningBalance : 0;
   if (Math.abs(net) < 0.01)
     return { amount: 0, label: "تسویه / بدون مانده", tone: "muted-cell" };
   return net > 0
@@ -3152,22 +3474,157 @@ export function settlePurchasePayablesFIFO(
   return settlements;
 }
 
+export interface PurchaseCashBreakdown {
+  settlements: PurchasePayableSettlement[];
+  paidByInvoice: Map<string, number>;
+  allocationsByTxnAndInvoice: Map<string, number>;
+  txnIdsByInvoice: Map<string, string[]>;
+}
+
+/**
+ * Allocates purchase payments AND cash/bank payment transactions (single-target,
+ * multi-target, and unassigned party-level FIFO) across open purchase invoices.
+ */
+export function getPurchaseCashPaymentBreakdown(
+  invoices: Invoice[],
+  transactions: Transaction[] = [],
+  purchasePayments: PurchasePayment[] = []
+): PurchaseCashBreakdown {
+  const eligibleInvoices = [...invoices]
+    .filter(invoice => invoice.type === "خرید" && invoice.status !== "باطل")
+    .sort(
+      (a, b) =>
+        jalaliDateKey(a.date).localeCompare(jalaliDateKey(b.date)) ||
+        a.id.localeCompare(b.id)
+    );
+
+  const settlements = settlePurchasePayablesFIFO(invoices, purchasePayments);
+  const paidByInvoice = new Map<string, number>();
+  const remainingByInvoice = new Map(
+    eligibleInvoices.map(invoice => [invoice.id, Math.max(0, invoice.amount)])
+  );
+
+  settlements.forEach(item => {
+    paidByInvoice.set(
+      item.invoiceId,
+      (paidByInvoice.get(item.invoiceId) || 0) + item.amount
+    );
+    if (remainingByInvoice.has(item.invoiceId)) {
+      remainingByInvoice.set(
+        item.invoiceId,
+        Math.max(0, (remainingByInvoice.get(item.invoiceId) || 0) - item.amount)
+      );
+    }
+  });
+
+  const allocationsByTxnAndInvoice = new Map<string, number>();
+  const txnIdsByInvoice = new Map<string, string[]>();
+
+  const recordTxnLink = (txnId: string, invoiceId: string, amount: number) => {
+    const key = `${txnId}:${invoiceId}`;
+    allocationsByTxnAndInvoice.set(
+      key,
+      (allocationsByTxnAndInvoice.get(key) || 0) + amount
+    );
+    const list = txnIdsByInvoice.get(invoiceId) || [];
+    if (!list.includes(txnId)) {
+      txnIdsByInvoice.set(invoiceId, [...list, txnId]);
+    }
+  };
+
+  const validPurchaseTxns = (transactions || [])
+    .filter(
+      t =>
+        t.status !== "باطل" &&
+        !isSyntheticCheckTransaction(t) &&
+        (t.type === "پرداخت" || t.type === "خرید")
+    )
+    .sort(
+      (a, b) =>
+        jalaliDateKey(a.date).localeCompare(jalaliDateKey(b.date)) ||
+        a.id.localeCompare(b.id)
+    );
+
+  // 1. Single-invoice direct payments
+  for (const t of validPurchaseTxns) {
+    const targets = getTransactionTargetInvoiceIds(t);
+    if (targets.length !== 1) continue;
+    const invoiceId = targets[0];
+    if (!remainingByInvoice.has(invoiceId)) continue;
+    paidByInvoice.set(
+      invoiceId,
+      (paidByInvoice.get(invoiceId) || 0) + t.amount
+    );
+    const currentRem = remainingByInvoice.get(invoiceId) || 0;
+    remainingByInvoice.set(invoiceId, Math.max(0, currentRem - t.amount));
+    recordTxnLink(t.id, invoiceId, t.amount);
+  }
+
+  // 2. Multi-invoice targeted payments distributed FIFO across selected purchase invoices
+  for (const t of validPurchaseTxns) {
+    const targets = getTransactionTargetInvoiceIds(t);
+    if (targets.length <= 1) continue;
+    let remainingTxn = t.amount;
+    for (const invoice of eligibleInvoices) {
+      if (remainingTxn <= FIFO_EPSILON) break;
+      if (!targets.includes(invoice.id)) continue;
+      const currentRem = remainingByInvoice.get(invoice.id) || 0;
+      if (currentRem <= FIFO_EPSILON) continue;
+      const toApply = Math.min(currentRem, remainingTxn);
+      remainingByInvoice.set(invoice.id, Math.max(0, currentRem - toApply));
+      paidByInvoice.set(
+        invoice.id,
+        (paidByInvoice.get(invoice.id) || 0) + toApply
+      );
+      recordTxnLink(t.id, invoice.id, toApply);
+      remainingTxn -= toApply;
+    }
+  }
+
+  // 3. Unassigned payments to supplier distributed FIFO across remaining open purchase invoices
+  for (const t of validPurchaseTxns) {
+    const targets = getTransactionTargetInvoiceIds(t);
+    if (targets.length > 0 || !(t.partyId || t.party)) continue;
+    let unassignedRemaining = t.amount;
+    for (const invoice of eligibleInvoices) {
+      if (unassignedRemaining <= FIFO_EPSILON) break;
+      const isSameParty =
+        (t.partyId && invoice.partyId === t.partyId) ||
+        (t.party && invoice.partyId === t.party);
+      if (!isSameParty) continue;
+
+      const currentRem = remainingByInvoice.get(invoice.id) || 0;
+      if (currentRem <= FIFO_EPSILON) continue;
+
+      const toApply = Math.min(currentRem, unassignedRemaining);
+      remainingByInvoice.set(invoice.id, Math.max(0, currentRem - toApply));
+      paidByInvoice.set(
+        invoice.id,
+        (paidByInvoice.get(invoice.id) || 0) + toApply
+      );
+      recordTxnLink(t.id, invoice.id, toApply);
+      unassignedRemaining -= toApply;
+    }
+  }
+
+  return {
+    settlements,
+    paidByInvoice,
+    allocationsByTxnAndInvoice,
+    txnIdsByInvoice,
+  };
+}
+
 export function rebuildPurchasePayables(state: AppState): AppState {
-  const settlements = settlePurchasePayablesFIFO(state.invoices, state.purchasePayments);
-  const byInvoice = new Map<string, PurchasePayableSettlement[]>();
-  settlements.forEach(item => byInvoice.set(item.invoiceId, [...(byInvoice.get(item.invoiceId) || []), item]));
+  const breakdown = getPurchaseCashPaymentBreakdown(
+    state.invoices,
+    state.transactions || [],
+    state.purchasePayments
+  );
   const invoices = state.invoices.map(invoice => {
     if (invoice.type !== "خرید" || invoice.status === "باطل") return invoice;
-    const payableSum = (byInvoice.get(invoice.id) || []).reduce((sum, item) => sum + item.amount, 0);
-    const cashTxnSum = (state.transactions || [])
-      .filter(
-        t =>
-          t.targetInvoiceId === invoice.id &&
-          t.status !== "باطل" &&
-          (t.type === "پرداخت" || t.type === "خرید")
-      )
-      .reduce((sum, t) => sum + t.amount, 0);
-    const paidAmount = Math.min(invoice.amount, payableSum + cashTxnSum);
+    const rawPaid = breakdown.paidByInvoice.get(invoice.id) || 0;
+    const paidAmount = Math.min(invoice.amount, rawPaid);
     return {
       ...invoice,
       paidAmount,
@@ -3181,7 +3638,7 @@ export function rebuildPurchasePayables(state: AppState): AppState {
   return {
     ...state,
     invoices,
-    purchasePayableAllocations: settlements.map(item => ({
+    purchasePayableAllocations: breakdown.settlements.map(item => ({
       id: createId("purchase-allocation"),
       paymentId: item.paymentId,
       invoiceId: item.invoiceId,
@@ -3195,9 +3652,26 @@ export function purchaseSupplierBalance(state: AppState, supplierId: string) {
   const invoices = state.invoices
     .filter(invoice => invoice.type === "خرید" && invoice.partyId === supplierId && invoice.status !== "باطل")
     .reduce((sum, invoice) => sum + invoice.amount, 0);
-  const payments = state.purchasePayments
-    .filter(payment => payment.supplierId === supplierId)
+  const directPurchasePayments = (state.purchasePayments || [])
+    .filter(payment => {
+      if (payment.supplierId !== supplierId) return false;
+      if (payment.issuedCheckId) {
+        const ic = state.issuedChecks.find(c => c.id === payment.issuedCheckId);
+        if (ic && ["باطل", "برگشتی"].includes(ic.status)) return false;
+      }
+      return true;
+    })
     .reduce((sum, payment) => sum + payment.amount, 0);
+  const txnPurchasePayments = (state.transactions || [])
+    .filter(
+      t =>
+        t.partyId === supplierId &&
+        t.status !== "باطل" &&
+        !isSyntheticCheckTransaction(t) &&
+        (t.type === "پرداخت" || t.type === "خرید")
+    )
+    .reduce((sum, t) => sum + t.amount, 0);
+  const payments = directPurchasePayments + txnPurchasePayments;
   return { payable: Math.max(0, invoices - payments), credit: Math.max(0, payments - invoices) };
 }
 

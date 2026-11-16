@@ -82,6 +82,13 @@ import {
   settleChecksFIFO,
   FIFO_EPSILON,
   getInvoiceCashPayments,
+  getInvoiceCashPaymentBreakdown,
+  getPurchaseCashPaymentBreakdown,
+  getTransactionTargetInvoiceIds,
+  isSyntheticCheckTransaction,
+  partyBalanceDescriptor,
+  buildPartyLedgerStatement,
+  purchaseSupplierBalance,
   getSettlementBalances,
   allocateCheckFIFO,
   rebuildCheckAllocations,
@@ -214,31 +221,6 @@ function cashDirectionLabel(type: string) {
   return ["دریافت", "درآمد", "فروش کالا"].includes(type)
     ? "ورود وجه / افزایش موجودی حساب"
     : "خروج وجه / کاهش موجودی حساب";
-}
-
-function partyBalanceDescriptor(state: AppState, personId: string) {
-  const invoices = state.invoices.filter(
-    invoice => invoice.partyId === personId && invoice.status !== "باطل"
-  );
-  const salesOutstanding = invoices
-    .filter(invoice => invoice.type === "فروش")
-    .reduce(
-      (sum, invoice) =>
-        sum + Math.max(0, invoice.amount - (invoice.paidAmount || 0)),
-      0
-    );
-  const purchaseTotal = invoices
-    .filter(invoice => invoice.type === "خرید")
-    .reduce((sum, invoice) => sum + invoice.amount, 0);
-  const purchasePaid = state.purchasePayments
-    .filter(payment => payment.supplierId === personId)
-    .reduce((sum, payment) => sum + payment.amount, 0);
-  const net = salesOutstanding - Math.max(0, purchaseTotal - purchasePaid);
-  if (Math.abs(net) < 0.01)
-    return { amount: 0, label: "تسویه / بدون مانده", tone: "muted-cell" };
-  return net > 0
-    ? { amount: net, label: "طلب از طرف حساب", tone: "amount-negative" }
-    : { amount: Math.abs(net), label: "بدهی به طرف حساب", tone: "amount-positive" };
 }
 
 function printWithTarget(
@@ -588,7 +570,9 @@ function LocalLockScreen({
 }
 
 export default function Home() {
-  const [state, setState] = useState<AppState>(() => loadState());
+  const [state, setState] = useState<AppState>(() =>
+    rebuildPurchasePayables(rebuildCheckAllocations(loadState()))
+  );
   const [isUnlocked, setIsUnlocked] = useState(() =>
     !hasLocalCredential(loadState().settings.security)
   );
@@ -674,7 +658,9 @@ export default function Home() {
     setFutureStates([]);
     const reconciled = reconcileLedgerEvents(
       state,
-      refreshIssuedCheckStatuses(rebuildPurchasePayables(next))
+      refreshIssuedCheckStatuses(
+        rebuildPurchasePayables(rebuildCheckAllocations(next))
+      )
     );
     setState(saveState(appendAudit(rebuildCashProjection(reconciled), action, message)));
     setNotice(message);
@@ -1019,6 +1005,7 @@ export default function Home() {
     partyId?: string;
     accountId?: string;
     targetInvoiceId?: string;
+    targetInvoiceIds?: string[];
     trackingCode?: string;
     note: string;
     date: string;
@@ -1026,11 +1013,16 @@ export default function Home() {
     const partyName = input.partyId
       ? state.people.find(p => p.id === input.partyId)?.name || input.partyId
       : "";
+    const normalizedTargets = getTransactionTargetInvoiceIds(input);
     const newTxn: AppState["transactions"][number] = {
       id: createId("txn"),
       status: "ثبت شده" as const,
       party: partyName,
       ...input,
+      targetInvoiceId:
+        normalizedTargets.length === 1 ? normalizedTargets[0] : undefined,
+      targetInvoiceIds:
+        normalizedTargets.length > 0 ? normalizedTargets : undefined,
     };
     let nextAccounts = state.accounts;
     if (input.accountId) {
@@ -1041,7 +1033,7 @@ export default function Home() {
       accounts: nextAccounts,
       transactions: [newTxn, ...state.transactions],
     };
-    if (input.targetInvoiceId) {
+    if (normalizedTargets.length > 0 || input.partyId) {
       next = rebuildPurchasePayables(rebuildCheckAllocations(next));
     }
     updateState(next, `ثبت ${transactionLabel(input.type)} جدید`);
@@ -1919,12 +1911,15 @@ function Invoices({
                 note: payment.note,
               }))
           : (state.transactions || [])
-              .filter(
-                t =>
-                  t.targetInvoiceId === invoice.id &&
+              .filter(t => {
+                const targets = getTransactionTargetInvoiceIds(t);
+                return (
+                  targets.length === 1 &&
+                  targets[0] === invoice.id &&
                   t.status !== "باطل" &&
                   (t.type === "دریافت" || t.type === "فروش")
-              )
+                );
+              })
               .map(t => ({
                 ...blankPayment,
                 method: "نقدی" as const,
@@ -1935,12 +1930,15 @@ function Invoices({
                 note: t.note,
               })).length > 0
               ? (state.transactions || [])
-                  .filter(
-                    t =>
-                      t.targetInvoiceId === invoice.id &&
+                  .filter(t => {
+                    const targets = getTransactionTargetInvoiceIds(t);
+                    return (
+                      targets.length === 1 &&
+                      targets[0] === invoice.id &&
                       t.status !== "باطل" &&
                       (t.type === "دریافت" || t.type === "فروش")
-                  )
+                    );
+                  })
                   .map(t => ({
                     ...blankPayment,
                     method: "نقدی" as const,
@@ -1978,19 +1976,32 @@ function Invoices({
       ? releasePurchasePaymentsForInvoice(state, invoice.id)
       : state;
     if (invoice.type === "فروش") {
-      const oldInvoiceTxns = (released.transactions || []).filter(
-        t => t.targetInvoiceId === invoice.id && t.status !== "باطل"
-      );
+      const exclusiveTxns = (released.transactions || []).filter(t => {
+        const targets = getTransactionTargetInvoiceIds(t);
+        return targets.length === 1 && targets[0] === invoice.id && t.status !== "باطل";
+      });
       let accs = released.accounts;
-      for (const oldTx of oldInvoiceTxns) {
+      for (const oldTx of exclusiveTxns) {
         accs = applyAccountEffect(accs, oldTx, -1);
       }
       released = {
         ...released,
         accounts: accs,
-        transactions: (released.transactions || []).filter(
-          t => t.targetInvoiceId !== invoice.id
-        ),
+        transactions: (released.transactions || [])
+          .filter(t => {
+            const targets = getTransactionTargetInvoiceIds(t);
+            return !(targets.length === 1 && targets[0] === invoice.id);
+          })
+          .map(t => {
+            const targets = getTransactionTargetInvoiceIds(t);
+            if (!targets.includes(invoice.id)) return t;
+            const remainingTargets = targets.filter(id => id !== invoice.id);
+            return {
+              ...t,
+              targetInvoiceId: remainingTargets.length === 1 ? remainingTargets[0] : undefined,
+              targetInvoiceIds: remainingTargets.length > 0 ? remainingTargets : undefined,
+            };
+          }),
       };
     }
     onSave(
@@ -2155,15 +2166,17 @@ function Invoices({
     let currentTransactions = releasedState.transactions || [];
 
     if (editingInvoice && editingInvoice.type === "فروش") {
-      const oldInvoiceTxns = currentTransactions.filter(
-        t => t.targetInvoiceId === editingInvoice.id && t.status !== "باطل"
-      );
-      for (const oldTx of oldInvoiceTxns) {
+      const exclusiveTxns = currentTransactions.filter(t => {
+        const targets = getTransactionTargetInvoiceIds(t);
+        return targets.length === 1 && targets[0] === editingInvoice.id && t.status !== "باطل";
+      });
+      for (const oldTx of exclusiveTxns) {
         currentAccounts = applyAccountEffect(currentAccounts, oldTx, -1);
       }
-      currentTransactions = currentTransactions.filter(
-        t => t.targetInvoiceId !== editingInvoice.id
-      );
+      currentTransactions = currentTransactions.filter(t => {
+        const targets = getTransactionTargetInvoiceIds(t);
+        return !(targets.length === 1 && targets[0] === editingInvoice.id);
+      });
     }
 
     const partyObj = state.people.find(p => p.id === form.partyId);
@@ -2692,23 +2705,51 @@ function Invoices({
                                 })()}
 
                                 {(() => {
-                                  const connectedCashTxns = (state.transactions || []).filter(
-                                    t => t.targetInvoiceId === invoice.id && t.status !== "باطل"
-                                  );
-                                  if (!connectedCashTxns.length) return null;
+                                  const breakdown =
+                                    invoice.type === "فروش"
+                                      ? getInvoiceCashPaymentBreakdown(
+                                          state.invoices,
+                                          state.transactions || []
+                                        )
+                                      : getPurchaseCashPaymentBreakdown(
+                                          state.invoices,
+                                          state.transactions || [],
+                                          state.purchasePayments || []
+                                        );
+                                  const linkedIds = breakdown.txnIdsByInvoice.get(invoice.id) || [];
+                                  const directIds = (state.transactions || [])
+                                    .filter(
+                                      t =>
+                                        t.status !== "باطل" &&
+                                        getTransactionTargetInvoiceIds(t).includes(invoice.id)
+                                    )
+                                    .map(t => t.id);
+                                  const mergedIds = Array.from(new Set([...linkedIds, ...directIds]));
+                                  const connectedCashItems = mergedIds
+                                    .map(id => (state.transactions || []).find(t => t.id === id))
+                                    .filter((t): t is NonNullable<typeof t> => Boolean(t && t.status !== "باطل"))
+                                    .map(t => ({
+                                      txn: t,
+                                      allocated:
+                                        breakdown.allocationsByTxnAndInvoice.get(`${t.id}:${invoice.id}`) ??
+                                        t.amount,
+                                    }));
+                                  if (!connectedCashItems.length) return null;
                                   return (
                                     <div style={{ marginBottom: 12, background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: "8px 12px" }}>
                                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                                         <strong style={{ fontSize: "0.82rem", color: "#166534" }}>
-                                          پرداخت‌های نقدی و بانکی متصل به این فاکتور ({formatNumber(connectedCashTxns.length)} مورد):
+                                          پرداخت‌های نقدی و بانکی متصل به این فاکتور ({formatNumber(connectedCashItems.length)} مورد):
                                         </strong>
                                         <span style={{ fontSize: "0.82rem", fontWeight: 700, color: "#15803d" }}>
-                                          مجموع: {formatMoney(connectedCashTxns.reduce((sum, t) => sum + t.amount, 0), state.settings.currency)}
+                                          مجموع: {formatMoney(connectedCashItems.reduce((sum, item) => sum + item.allocated, 0), state.settings.currency)}
                                         </span>
                                       </div>
                                       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                                        {connectedCashTxns.map(t => {
+                                        {connectedCashItems.map(({ txn: t, allocated }) => {
                                           const acc = state.accounts.find(a => a.id === t.accountId);
+                                          const targetCount = getTransactionTargetInvoiceIds(t).length;
+                                          const isShared = targetCount !== 1 || allocated < t.amount;
                                           return (
                                             <span
                                               key={t.id}
@@ -2721,7 +2762,11 @@ function Invoices({
                                                 color: "#14532d",
                                               }}
                                             >
-                                              <strong>{acc?.name || "حساب مالی"}</strong> · {formatMoney(t.amount, state.settings.currency)} · تاریخ: {formatDate(t.date)}
+                                              <strong>{acc?.name || "حساب مالی"}</strong> · {formatMoney(allocated, state.settings.currency)}
+                                              {isShared && allocated !== t.amount
+                                                ? ` (از کل ${formatMoney(t.amount, state.settings.currency)})`
+                                                : ""}
+                                              {" · تاریخ: "}{formatDate(t.date)}
                                               {t.trackingCode ? ` · کد پیگیری: ${t.trackingCode}` : ""}
                                               {t.note ? ` · ${t.note}` : ""}
                                             </span>
@@ -4676,34 +4721,6 @@ function Transactions({
       date: item.date,
     });
   }
-  function applyAccountEffect(
-    accounts: AppState["accounts"],
-    transaction: AppState["transactions"][number],
-    multiplier: 1 | -1
-  ) {
-    const totalTransferOutflow = transaction.amount + (transaction.type === "انتقال بین حساب‌ها" ? Math.max(0, transaction.feeAmount || 0) : 0);
-    return accounts.map(account => {
-      if (transaction.fromAccountId === account.id)
-        return {
-          ...account,
-          balance: account.balance - totalTransferOutflow * multiplier,
-        };
-      if (transaction.toAccountId === account.id)
-        return {
-          ...account,
-          balance: account.balance + transaction.amount * multiplier,
-        };
-      if (transaction.accountId === account.id && transaction.partnerEffect) {
-        const delta =
-          transaction.partnerEffect === "افزایش طلب شریک" ||
-          transaction.partnerEffect === "افزایش طلب کارگاه از شریک"
-            ? transaction.amount
-            : -transaction.amount;
-        return { ...account, balance: account.balance + delta * multiplier };
-      }
-      return account;
-    });
-  }
   function applyProductEffect(
     products: AppState["products"],
     transaction: AppState["transactions"][number],
@@ -4749,14 +4766,16 @@ function Transactions({
     nextProducts = applyProductEffect(nextProducts, editingTransaction, -1);
     nextProducts = applyProductEffect(nextProducts, updatedTransaction, 1);
     onSave(
-      {
-        ...state,
-        accounts: nextAccounts,
-        products: nextProducts,
-        transactions: state.transactions.map(row =>
-          row.id === editingTransaction.id ? updatedTransaction : row
-        ),
-      },
+      rebuildPurchasePayables(
+        rebuildCheckAllocations({
+          ...state,
+          accounts: nextAccounts,
+          products: nextProducts,
+          transactions: state.transactions.map(row =>
+            row.id === editingTransaction.id ? updatedTransaction : row
+          ),
+        })
+      ),
       "تمام اطلاعات عملیات ویرایش شد"
     );
     setEditingTransaction(null);
@@ -5566,6 +5585,19 @@ function Transactions({
                       {item.note && (
                         <small className="muted-cell">{item.note}</small>
                       )}
+                      {(() => {
+                        const targetIds = getTransactionTargetInvoiceIds(item);
+                        if (!targetIds.length) return null;
+                        const targetNumbers = targetIds
+                          .map(id => state.invoices.find(inv => inv.id === id)?.number)
+                          .filter(Boolean);
+                        if (!targetNumbers.length) return null;
+                        return (
+                          <small className="table-subline" style={{ color: "#15803d" }}>
+                            متصل به فاکتورهای: {targetNumbers.join("، ")}
+                          </small>
+                        );
+                      })()}
                     </td>
                     <td className="amount-cell">
                       <strong>{formatMoney(item.amount, state.settings.currency)}</strong>
@@ -5616,14 +5648,16 @@ function Transactions({
                             -1
                           );
                           onSave(
-                            {
-                              ...state,
-                              accounts: nextAccounts,
-                              products: nextProducts,
-                              transactions: state.transactions.filter(
-                                row => row.id !== item.id
-                              ),
-                            },
+                            rebuildPurchasePayables(
+                              rebuildCheckAllocations({
+                                ...state,
+                                accounts: nextAccounts,
+                                products: nextProducts,
+                                transactions: state.transactions.filter(
+                                  row => row.id !== item.id
+                                ),
+                              })
+                            ),
                             "عملیات حذف شد و اثر حسابی آن برگشت داده شد"
                           );
                         }}
@@ -9920,6 +9954,8 @@ function Reports({
         const purchasesBase = invoices
           .filter(invoice => invoice.type === "خرید")
           .reduce((sum, invoice) => sum + invoice.amount, 0);
+        const rows = buildPartyLedgerStatement(state, person.id);
+        const balance = rows.length ? rows[rows.length - 1].runningBalance : 0;
         const collected = invoices.reduce(
           (sum, invoice) => sum + (invoice.paidAmount || 0),
           0
@@ -9929,10 +9965,16 @@ function Reports({
           salesBase,
           purchasesBase,
           collected,
-          balance: salesBase - purchasesBase - collected,
+          balance,
         };
       })
-      .filter(row => row.salesBase || row.purchasesBase || row.collected)
+      .filter(
+        row =>
+          row.salesBase ||
+          row.purchasesBase ||
+          row.collected ||
+          Math.abs(row.balance) > 0.01
+      )
       .sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance));
     return {
       sales,
@@ -10013,57 +10055,10 @@ function Reports({
   const [statementPartyId, setStatementPartyId] = useState("");
   const statementRows = useMemo(() => {
     if (!statementPartyId) return [];
-    const raw: Array<{
-      id: string;
-      date: string;
-      reference: string;
-      debit: number;
-      credit: number;
-      note: string;
-    }> = [];
-    state.invoices
-      .filter(
-        invoice =>
-          invoice.partyId === statementPartyId && invoice.status !== "باطل"
-      )
-      .forEach(invoice =>
-        raw.push({
-          id: `statement-invoice-${invoice.id}`,
-          date: invoice.date,
-          reference: `فاکتور ${invoice.type} ${invoice.number}`,
-          debit: invoice.type === "فروش" ? invoice.amount : 0,
-          credit: invoice.type === "خرید" ? invoice.amount : 0,
-          note: invoice.note || "",
-        })
-      );
-    state.checks
-      .filter(
-        check => check.partyId === statementPartyId && check.status !== "باطل"
-      )
-      .forEach(check =>
-        raw.push({
-          id: `statement-check-${check.id}`,
-          date: check.receivedDate || check.dueDate,
-          reference: `چک دریافتی ${check.number}`,
-          debit: ["برگشتی", "عودت داده شده"].includes(check.status)
-            ? check.amount
-            : 0,
-          credit: ["برگشتی", "عودت داده شده"].includes(check.status)
-            ? 0
-            : check.amount,
-          note: check.status,
-        })
-      );
-    return raw
-      .sort((a, b) =>
-        jalaliDateKey(a.date).localeCompare(jalaliDateKey(b.date))
-      )
-      .map((row, index, all) => ({
-        ...row,
-        balance: all
-          .slice(0, index + 1)
-          .reduce((sum, item) => sum + item.debit - item.credit, 0),
-      }));
+    return buildPartyLedgerStatement(state, statementPartyId).map(row => ({
+      ...row,
+      balance: row.runningBalance,
+    }));
   }, [statementPartyId, state]);
   function downloadStatement() {
     if (!statementPartyId || !statementRows.length) return;
@@ -10097,17 +10092,34 @@ function Reports({
         const invoices = state.invoices.filter(
           invoice => invoice.type === "خرید" && invoice.status !== "باطل" && invoice.partyId === supplier.id
         );
-        const payments = state.purchasePayments.filter(payment => payment.supplierId === supplier.id);
+        const payments = state.purchasePayments.filter(payment => {
+          if (payment.supplierId !== supplier.id) return false;
+          if (payment.issuedCheckId) {
+            const ic = state.issuedChecks.find(c => c.id === payment.issuedCheckId);
+            if (ic && ["باطل", "برگشتی"].includes(ic.status)) return false;
+          }
+          return true;
+        });
+        const paymentTxns = (state.transactions || []).filter(
+          t =>
+            t.partyId === supplier.id &&
+            t.status !== "باطل" &&
+            !isSyntheticCheckTransaction(t) &&
+            (t.type === "پرداخت" || t.type === "خرید")
+        );
         const invoiceTotal = invoices.reduce((sum, invoice) => sum + invoice.amount, 0);
-        const paymentTotal = payments.reduce((sum, payment) => sum + payment.amount, 0);
+        const paymentTotal =
+          payments.reduce((sum, payment) => sum + payment.amount, 0) +
+          paymentTxns.reduce((sum, t) => sum + t.amount, 0);
+        const bal = purchaseSupplierBalance(state, supplier.id);
         return {
           supplier,
           invoiceTotal,
           paymentTotal,
-          payable: Math.max(0, invoiceTotal - paymentTotal),
-          credit: Math.max(0, paymentTotal - invoiceTotal),
+          payable: bal.payable,
+          credit: bal.credit,
           invoiceCount: invoices.length,
-          paymentCount: payments.length,
+          paymentCount: payments.length + paymentTxns.length,
         };
       })
       .filter(row => row.invoiceTotal || row.paymentTotal)
@@ -10469,14 +10481,16 @@ function Reports({
                     </td>
                     <td
                       className={
-                        row.balance >= 0 ? "amount-negative" : "amount-positive"
+                        Math.abs(row.balance) < 0.01
+                          ? "muted-cell"
+                          : row.balance > 0
+                            ? "amount-negative"
+                            : "amount-positive"
                       }
                     >
-                      {formatMoney(
-                        Math.abs(row.balance),
-                        state.settings.currency
-                      )}{" "}
-                      {row.balance >= 0 ? "بدهکار" : "بستانکار"}
+                      {Math.abs(row.balance) < 0.01
+                        ? "تسویه"
+                        : `${formatMoney(Math.abs(row.balance), state.settings.currency)} ${row.balance > 0 ? "بدهکار" : "بستانکار"}`}
                     </td>
                   </tr>
                 ))
@@ -12727,6 +12741,7 @@ function QuickAdd({
     partyId?: string;
     accountId?: string;
     targetInvoiceId?: string;
+    targetInvoiceIds?: string[];
     note: string;
     date: string;
   }) => void;
@@ -12736,17 +12751,76 @@ function QuickAdd({
     amount: "",
     partyId: "",
     accountId: accounts[0]?.id || "",
-    targetInvoiceId: "",
+    targetInvoiceIds: [] as string[],
     note: "",
     date: todayJalali(),
   });
+  const [amountManuallyEdited, setAmountManuallyEdited] = useState(false);
 
   const candidateInvoices = useMemo(() => {
     if (!form.partyId) return [];
-    return invoices.filter(
-      inv => inv.partyId === form.partyId && inv.status !== "باطل" && inv.status !== "تسویه شده"
-    );
-  }, [invoices, form.partyId]);
+    const preferPurchase = ["پرداخت", "خرید", "هزینه"].includes(form.type);
+    return invoices
+      .filter(
+        inv =>
+          inv.partyId === form.partyId &&
+          inv.status !== "باطل" &&
+          inv.status !== "تسویه شده"
+      )
+      .sort((a, b) => {
+        const aPref = (a.type === "خرید") === preferPurchase ? 0 : 1;
+        const bPref = (b.type === "خرید") === preferPurchase ? 0 : 1;
+        if (aPref !== bPref) return aPref - bPref;
+        return (
+          jalaliDateKey(a.date).localeCompare(jalaliDateKey(b.date)) ||
+          a.id.localeCompare(b.id)
+        );
+      });
+  }, [invoices, form.partyId, form.type]);
+
+  const selectedRemainingTotal = useMemo(() => {
+    return candidateInvoices
+      .filter(inv => form.targetInvoiceIds.includes(inv.id))
+      .reduce(
+        (sum, inv) => sum + Math.max(0, inv.amount - (inv.paidAmount || 0)),
+        0
+      );
+  }, [candidateInvoices, form.targetInvoiceIds]);
+
+  function toggleTargetInvoice(invId: string) {
+    setForm(current => {
+      const exists = current.targetInvoiceIds.includes(invId);
+      const nextIds = exists
+        ? current.targetInvoiceIds.filter(id => id !== invId)
+        : [...current.targetInvoiceIds, invId];
+      const nextSum = invoices
+        .filter(inv => nextIds.includes(inv.id))
+        .reduce(
+          (sum, inv) => sum + Math.max(0, inv.amount - (inv.paidAmount || 0)),
+          0
+        );
+      const selectedNums = invoices
+        .filter(inv => nextIds.includes(inv.id))
+        .map(inv => inv.number);
+      const nextNote =
+        !current.note || current.note.startsWith("پرداخت نقدی فاکتور")
+          ? selectedNums.length > 0
+            ? `پرداخت نقدی فاکتور${selectedNums.length > 1 ? "های" : ""} ${selectedNums.join("، ")}`
+            : ""
+          : current.note;
+      return {
+        ...current,
+        targetInvoiceIds: nextIds,
+        amount:
+          !amountManuallyEdited || !current.amount
+            ? nextSum > 0
+              ? String(nextSum)
+              : ""
+            : current.amount,
+        note: nextNote,
+      };
+    });
+  }
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -12757,7 +12831,12 @@ function QuickAdd({
       amount,
       partyId: form.partyId || undefined,
       accountId: form.accountId || undefined,
-      targetInvoiceId: form.targetInvoiceId || undefined,
+      targetInvoiceId:
+        form.targetInvoiceIds.length === 1
+          ? form.targetInvoiceIds[0]
+          : undefined,
+      targetInvoiceIds:
+        form.targetInvoiceIds.length > 0 ? form.targetInvoiceIds : undefined,
       note: form.note,
       date: form.date,
     });
@@ -12792,7 +12871,10 @@ function QuickAdd({
             autoFocus
             inputMode="numeric"
             value={form.amount}
-            onChange={e => setForm({ ...form, amount: e.target.value })}
+            onChange={e => {
+              setAmountManuallyEdited(Boolean(e.target.value));
+              setForm({ ...form, amount: e.target.value });
+            }}
             placeholder="مثلاً ۵۰۰۰۰۰۰۰"
           />
         </label>
@@ -12823,7 +12905,8 @@ function QuickAdd({
             value={form.partyId}
             onChange={e => {
               const pid = e.target.value;
-              setForm({ ...form, partyId: pid, targetInvoiceId: "" });
+              setAmountManuallyEdited(false);
+              setForm({ ...form, partyId: pid, targetInvoiceIds: [], amount: "" });
             }}
           >
             <option value="">بدون طرف حساب</option>
@@ -12835,33 +12918,167 @@ function QuickAdd({
           </select>
         </label>
         {form.partyId && (
-          <label>
-            اتصال مستقیم به فاکتور (اختیاری)
-            <select
-              value={form.targetInvoiceId}
-              onChange={e => {
-                const invId = e.target.value;
-                const inv = invoices.find(i => i.id === invId);
-                const remaining = inv ? Math.max(0, inv.amount - (inv.paidAmount || 0)) : 0;
-                setForm(current => ({
-                  ...current,
-                  targetInvoiceId: invId,
-                  amount: !current.amount && remaining > 0 ? String(remaining) : current.amount,
-                  note: !current.note && inv ? `پرداخت نقدی فاکتور ${inv.number}` : current.note,
-                }));
-              }}
-            >
-              <option value="">-- بدون اتصال به فاکتور خاص (گردش عمومی طرف حساب) --</option>
-              {candidateInvoices.map(inv => {
-                const rem = Math.max(0, inv.amount - (inv.paidAmount || 0));
-                return (
-                  <option key={inv.id} value={inv.id}>
-                    فاکتور {inv.type} شماره {inv.number} (مبلغ: {formatMoney(inv.amount, currency)} · مانده: {formatMoney(rem, currency)})
-                  </option>
-                );
-              })}
-            </select>
-          </label>
+          <div className="full-field" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+              <span style={{ fontSize: "0.84rem", fontWeight: 700, color: "#1e293b" }}>
+                اتصال مستقیم به فاکتورهای باز (اختیاری — امکان انتخاب یک یا چند فاکتور)
+              </span>
+              {candidateInvoices.length > 0 && (
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button
+                    type="button"
+                    className="button button-ghost button-small"
+                    onClick={() => {
+                      const allIds = candidateInvoices.map(i => i.id);
+                      const sum = candidateInvoices.reduce(
+                        (s, inv) => s + Math.max(0, inv.amount - (inv.paidAmount || 0)),
+                        0
+                      );
+                      setAmountManuallyEdited(false);
+                      setForm(current => ({
+                        ...current,
+                        targetInvoiceIds: allIds,
+                        amount: sum > 0 ? String(sum) : current.amount,
+                        note:
+                          !current.note || current.note.startsWith("پرداخت نقدی فاکتور")
+                            ? `پرداخت نقدی فاکتورهای ${candidateInvoices.map(i => i.number).join("، ")}`
+                            : current.note,
+                      }));
+                    }}
+                  >
+                    انتخاب همه ({formatNumber(candidateInvoices.length)})
+                  </button>
+                  {form.targetInvoiceIds.length > 0 && (
+                    <button
+                      type="button"
+                      className="button button-ghost button-small"
+                      onClick={() => {
+                        setAmountManuallyEdited(false);
+                        setForm(current => ({
+                          ...current,
+                          targetInvoiceIds: [],
+                        }));
+                      }}
+                    >
+                      بدون اتصال (تسویه خودکار)
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {candidateInvoices.length > 0 ? (
+              <div
+                style={{
+                  border: "1px solid #cbd5e1",
+                  borderRadius: 10,
+                  padding: 8,
+                  maxHeight: 190,
+                  overflowY: "auto",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                  background: "#f8fafc",
+                }}
+              >
+                {candidateInvoices.map(inv => {
+                  const rem = Math.max(0, inv.amount - (inv.paidAmount || 0));
+                  const checked = form.targetInvoiceIds.includes(inv.id);
+                  return (
+                    <label
+                      key={inv.id}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 8,
+                        padding: "6px 10px",
+                        borderRadius: 8,
+                        background: checked ? "#ecfdf5" : "#ffffff",
+                        border: checked ? "1px solid #10b981" : "1px solid #e2e8f0",
+                        cursor: "pointer",
+                        fontSize: "0.82rem",
+                      }}
+                    >
+                      <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleTargetInvoice(inv.id)}
+                        />
+                        <strong>
+                          فاکتور {inv.type} شماره {inv.number}
+                        </strong>
+                        <small className="muted-cell">{formatDate(inv.date)}</small>
+                      </span>
+                      <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <small className="muted-cell">
+                          کل: {formatMoney(inv.amount, currency)}
+                        </small>
+                        <strong style={{ color: "#b45309" }}>
+                          مانده: {formatMoney(rem, currency)}
+                        </strong>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            ) : (
+              <div
+                style={{
+                  fontSize: "0.8rem",
+                  color: "#64748b",
+                  background: "#f8fafc",
+                  border: "1px dashed #cbd5e1",
+                  borderRadius: 8,
+                  padding: "8px 10px",
+                }}
+              >
+                فاکتور باز یا تسویه‌جزئی برای این طرف حساب وجود ندارد؛ عملیات در گردش عمومی طرف حساب ثبت می‌شود.
+              </div>
+            )}
+
+            {form.targetInvoiceIds.length > 0 ? (
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  background: "#f0fdf4",
+                  border: "1px solid #bbf7d0",
+                  borderRadius: 8,
+                  padding: "6px 10px",
+                  fontSize: "0.8rem",
+                  color: "#166534",
+                }}
+              >
+                <span>
+                  {formatNumber(form.targetInvoiceIds.length)} فاکتور انتخاب‌شده · جمع مانده:{" "}
+                  <strong>{formatMoney(selectedRemainingTotal, currency)}</strong>
+                </span>
+                <button
+                  type="button"
+                  className="text-button"
+                  style={{ fontSize: "0.78rem", color: "#15803d" }}
+                  onClick={() => {
+                    setAmountManuallyEdited(false);
+                    setForm(current => ({
+                      ...current,
+                      amount: String(selectedRemainingTotal),
+                    }));
+                  }}
+                >
+                  درج جمع در مبلغ
+                </button>
+              </div>
+            ) : (
+              candidateInvoices.length > 0 && (
+                <small className="muted-cell">
+                  حالت فعلی: بدون اتصال به فاکتور خاص (به‌صورت خودکار از قدیمی‌ترین فاکتور باز تسویه و در مانده طرف حساب لحاظ می‌شود)
+                </small>
+              )
+            )}
+          </div>
         )}
         <label>
           توضیحات

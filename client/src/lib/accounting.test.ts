@@ -38,8 +38,18 @@ import {
   calculateBaseUnitLine,
   calculatePersonUnsettledInvoiceBalance,
   getInvoiceCashPayments,
+  getInvoiceCashPaymentBreakdown,
+  getPurchaseCashPaymentBreakdown,
+  partyBalanceDescriptor,
+  buildPartyLedgerStatement,
+  purchaseSupplierBalance,
 } from "./accounting";
-import { addCashPaymentToInvoice, deleteCashPaymentFromInvoice } from "./ledgerMutations";
+import {
+  addCashPaymentToInvoice,
+  deleteCashPaymentFromInvoice,
+  deleteTransactionAndRevert,
+  editTransactionAndRevert,
+} from "./ledgerMutations";
 import { priceUnitFixture } from "./fixtures/price-unit.fixture";
 
 describe("bank fee rules", () => {
@@ -1943,6 +1953,370 @@ describe("invoice with cash payment and check combination", () => {
       // Remaining base is zero, so late profit must be zero
       const lateProfit = baseRemaining > 0 ? 999999 : 0;
       expect(lateProfit).toBe(0);
+    });
+  });
+
+  describe("party balance descriptor, unlinked purchase payments, and multi-invoice allocation", () => {
+    it("settles multiple purchase invoices FIFO and updates partyBalanceDescriptor from an unlinked پرداخت transaction", () => {
+      const baseState = normalizeState({
+        people: [
+          {
+            id: "sup-1",
+            code: "101",
+            name: "تأمین‌کننده نمونه",
+            type: "تأمین‌کننده",
+            roles: ["تأمین‌کننده"],
+            phone: "",
+            balance: 0,
+          },
+        ],
+        accounts: [{ id: "bank-1", name: "بانک ملت", type: "بانک", balance: 100_000_000 }],
+        invoices: [
+          {
+            id: "buy-1",
+            number: "B-101",
+            type: "خرید",
+            date: "1405/01/05",
+            partyId: "sup-1",
+            items: [],
+            allocations: [],
+            amount: 10_000_000,
+            paidAmount: 0,
+            status: "باز",
+            note: "",
+          },
+          {
+            id: "buy-2",
+            number: "B-102",
+            type: "خرید",
+            date: "1405/01/10",
+            partyId: "sup-1",
+            items: [],
+            allocations: [],
+            amount: 15_000_000,
+            paidAmount: 0,
+            status: "باز",
+            note: "",
+          },
+          {
+            id: "buy-3",
+            number: "B-103",
+            type: "خرید",
+            date: "1405/01/15",
+            partyId: "sup-1",
+            items: [],
+            allocations: [],
+            amount: 5_000_000,
+            paidAmount: 0,
+            status: "باز",
+            note: "",
+          },
+        ],
+        transactions: [
+          {
+            id: "tx-pay-all",
+            type: "پرداخت",
+            date: "1405/01/20",
+            partyId: "sup-1",
+            accountId: "bank-1",
+            amount: 30_000_000,
+            status: "ثبت شده",
+            note: "پرداخت یکجای ۳ فاکتور خرید بدون اتصال خاص",
+          },
+        ],
+      });
+
+      const rebuilt = rebuildPurchasePayables(baseState);
+
+      // All 3 purchase invoices must be 100% settled
+      expect(rebuilt.invoices.every(inv => inv.status === "تسویه شده")).toBe(true);
+      expect(rebuilt.invoices.map(inv => inv.paidAmount)).toEqual([
+        10_000_000,
+        15_000_000,
+        5_000_000,
+      ]);
+
+      // Party balance column ("مانده") and statement runningBalance must both show 0 (تسویه)
+      const desc = partyBalanceDescriptor(rebuilt, "sup-1");
+      expect(desc.amount).toBe(0);
+      expect(desc.label).toBe("تسویه / بدون مانده");
+
+      const statement = buildPartyLedgerStatement(rebuilt, "sup-1");
+      expect(statement.at(-1)?.runningBalance).toBe(0);
+
+      // Supplier balance report must also show 0 payable and 0 credit
+      expect(purchaseSupplierBalance(rebuilt, "sup-1")).toEqual({
+        payable: 0,
+        credit: 0,
+      });
+
+      // Partial payment of 22M instead of 30M -> 8M owed to supplier, buy-3 partially paid (0? No: 10M + 12M -> buy-2 partial 12M, buy-3 باز)
+      const partialState = rebuildPurchasePayables({
+        ...baseState,
+        transactions: [
+          {
+            ...baseState.transactions[0],
+            amount: 22_000_000,
+          },
+        ],
+      });
+      const partialDesc = partyBalanceDescriptor(partialState, "sup-1");
+      expect(partialDesc.amount).toBe(8_000_000);
+      expect(partialDesc.label).toBe("بدهی به طرف حساب");
+      expect(partialState.invoices.find(i => i.id === "buy-1")?.status).toBe("تسویه شده");
+      expect(partialState.invoices.find(i => i.id === "buy-2")?.paidAmount).toBe(12_000_000);
+      expect(partialState.invoices.find(i => i.id === "buy-2")?.status).toBe("تسویه جزئی");
+      expect(partialState.invoices.find(i => i.id === "buy-3")?.status).toBe("باز");
+
+      // Overpayment of 35M -> 5M credit (طلب از طرف حساب)
+      const overpaidState = rebuildPurchasePayables({
+        ...baseState,
+        transactions: [
+          {
+            ...baseState.transactions[0],
+            amount: 35_000_000,
+          },
+        ],
+      });
+      expect(partyBalanceDescriptor(overpaidState, "sup-1")).toEqual(
+        expect.objectContaining({
+          amount: 5_000_000,
+          label: "طلب از طرف حساب",
+        })
+      );
+      expect(purchaseSupplierBalance(overpaidState, "sup-1")).toEqual({
+        payable: 0,
+        credit: 5_000_000,
+      });
+    });
+
+    it("allocates multi-invoice targetInvoiceIds strictly to selected purchase and sales invoices", () => {
+      const state = normalizeState({
+        people: [
+          {
+            id: "party-1",
+            code: "201",
+            name: "شخص چندمنظوره",
+            type: "مشتری",
+            roles: ["مشتری", "تأمین‌کننده"],
+            phone: "",
+            balance: 0,
+          },
+        ],
+        invoices: [
+          {
+            id: "buy-1",
+            number: "P1",
+            type: "خرید",
+            date: "1405/01/01",
+            partyId: "party-1",
+            items: [],
+            allocations: [],
+            amount: 10_000_000,
+            paidAmount: 0,
+            status: "باز",
+            note: "",
+          },
+          {
+            id: "buy-2",
+            number: "P2",
+            type: "خرید",
+            date: "1405/01/02",
+            partyId: "party-1",
+            items: [],
+            allocations: [],
+            amount: 20_000_000,
+            paidAmount: 0,
+            status: "باز",
+            note: "",
+          },
+          {
+            id: "buy-3",
+            number: "P3",
+            type: "خرید",
+            date: "1405/01/03",
+            partyId: "party-1",
+            items: [],
+            allocations: [],
+            amount: 5_000_000,
+            paidAmount: 0,
+            status: "باز",
+            note: "",
+          },
+          {
+            id: "sale-1",
+            number: "S1",
+            type: "فروش",
+            date: "1405/01/05",
+            partyId: "party-1",
+            items: [],
+            allocations: [],
+            amount: 12_000_000,
+            paidAmount: 0,
+            status: "باز",
+            note: "",
+          },
+          {
+            id: "sale-2",
+            number: "S2",
+            type: "فروش",
+            date: "1405/01/06",
+            partyId: "party-1",
+            items: [],
+            allocations: [],
+            amount: 8_000_000,
+            paidAmount: 0,
+            status: "باز",
+            note: "",
+          },
+        ],
+        transactions: [
+          // Multi-invoice payment targeting ONLY buy-1 and buy-3 (skipping buy-2)
+          {
+            id: "tx-multi-buy",
+            type: "پرداخت",
+            date: "1405/01/10",
+            partyId: "party-1",
+            targetInvoiceIds: ["buy-1", "buy-3"],
+            amount: 13_000_000,
+            status: "ثبت شده",
+            note: "پرداخت مشترک فاکتورهای P1 و P3",
+          },
+          // Multi-invoice receipt targeting sale-1 and sale-2
+          {
+            id: "tx-multi-sale",
+            type: "دریافت",
+            date: "1405/01/12",
+            partyId: "party-1",
+            targetInvoiceIds: ["sale-1", "sale-2"],
+            amount: 16_000_000,
+            status: "ثبت شده",
+            note: "دریافت مشترک فاکتورهای S1 و S2",
+          },
+        ],
+      });
+
+      const rebuilt = rebuildPurchasePayables(rebuildCheckAllocations(state));
+      expect(rebuilt.invoices.find(i => i.id === "buy-1")?.paidAmount).toBe(10_000_000);
+      expect(rebuilt.invoices.find(i => i.id === "buy-1")?.status).toBe("تسویه شده");
+      expect(rebuilt.invoices.find(i => i.id === "buy-2")?.paidAmount).toBe(0);
+      expect(rebuilt.invoices.find(i => i.id === "buy-2")?.status).toBe("باز");
+      expect(rebuilt.invoices.find(i => i.id === "buy-3")?.paidAmount).toBe(3_000_000);
+      expect(rebuilt.invoices.find(i => i.id === "buy-3")?.status).toBe("تسویه جزئی");
+
+      expect(rebuilt.invoices.find(i => i.id === "sale-1")?.paidAmount).toBe(12_000_000);
+      expect(rebuilt.invoices.find(i => i.id === "sale-1")?.status).toBe("تسویه شده");
+      expect(rebuilt.invoices.find(i => i.id === "sale-2")?.paidAmount).toBe(4_000_000);
+      expect(rebuilt.invoices.find(i => i.id === "sale-2")?.status).toBe("تسویه جزئی");
+
+      const purchaseBreakdown = getPurchaseCashPaymentBreakdown(
+        rebuilt.invoices,
+        rebuilt.transactions,
+        rebuilt.purchasePayments
+      );
+      expect(purchaseBreakdown.allocationsByTxnAndInvoice.get("tx-multi-buy:buy-1")).toBe(10_000_000);
+      expect(purchaseBreakdown.allocationsByTxnAndInvoice.get("tx-multi-buy:buy-3")).toBe(3_000_000);
+
+      const salesBreakdown = getInvoiceCashPaymentBreakdown(rebuilt.invoices, rebuilt.transactions);
+      expect(salesBreakdown.allocationsByTxnAndInvoice.get("tx-multi-sale:sale-1")).toBe(12_000_000);
+      expect(salesBreakdown.allocationsByTxnAndInvoice.get("tx-multi-sale:sale-2")).toBe(4_000_000);
+
+      // Net balance: (Sales 20M - Receipts 16M = +4M) + (Paid Purchases 13M - Purchases 35M = -22M) = -18M (بدهی به طرف حساب)
+      expect(partyBalanceDescriptor(rebuilt, "party-1")).toEqual(
+        expect.objectContaining({
+          amount: 18_000_000,
+          label: "بدهی به طرف حساب",
+        })
+      );
+    });
+
+    it("does not double-count synthetic __check: collection transactions and updates invoices on edit/delete transaction", () => {
+      const state = rebuildPurchasePayables(
+        rebuildCheckAllocations(
+          normalizeState({
+            people: [
+              {
+                id: "cust-1",
+                code: "301",
+                name: "مشتری چک و نقد",
+                type: "مشتری",
+                roles: ["مشتری"],
+                phone: "",
+                balance: 0,
+              },
+            ],
+            accounts: [{ id: "bank-1", name: "بانک", type: "بانک", balance: 50_000_000 }],
+            invoices: [
+              {
+                id: "s-1",
+                number: "S-10",
+                type: "فروش",
+                date: "1405/01/01",
+                partyId: "cust-1",
+                items: [],
+                allocations: [],
+                amount: 10_000_000,
+                paidAmount: 0,
+                status: "باز",
+                note: "",
+              },
+            ],
+            checks: [
+              {
+                id: "chk-1",
+                number: "9988",
+                partyId: "cust-1",
+                dueDate: "1405/02/01",
+                receivedDate: "1405/01/05",
+                collectedDate: "1405/02/01",
+                amount: 6_000_000,
+                status: "وصول شده",
+                bank: "بانک",
+                bankAccountId: "bank-1",
+              },
+            ],
+            transactions: [
+              {
+                id: "check-receipt-1",
+                type: "دریافت",
+                date: "1405/01/05",
+                partyId: "cust-1",
+                amount: 6_000_000,
+                status: "ثبت شده",
+                note: "وصول چک 9988 __check:chk-1",
+              },
+              {
+                id: "cash-1",
+                type: "دریافت",
+                date: "1405/01/06",
+                partyId: "cust-1",
+                accountId: "bank-1",
+                amount: 4_000_000,
+                status: "ثبت شده",
+                note: "دریافت نقدی مانده فاکتور",
+              },
+            ],
+          })
+        )
+      );
+
+      // Synthetic check receipt must NOT inflate cash paid or credit customer twice!
+      expect(getInvoiceCashPayments(state.invoices, state.transactions).get("s-1")).toBe(4_000_000);
+      expect(partyBalanceDescriptor(state, "cust-1").amount).toBe(0);
+      expect(buildPartyLedgerStatement(state, "cust-1").at(-1)?.runningBalance).toBe(0);
+
+      // Editing cash-1 to 2M should update bank balance and invoice paidAmount (6M check + 2M cash = 8M)
+      const edited = editTransactionAndRevert(state, "cash-1", { amount: 2_000_000 });
+      expect(edited.nextState.invoices.find(i => i.id === "s-1")?.paidAmount).toBe(8_000_000);
+      expect(edited.nextState.invoices.find(i => i.id === "s-1")?.status).toBe("تسویه جزئی");
+      expect(partyBalanceDescriptor(edited.nextState, "cust-1")).toEqual(
+        expect.objectContaining({ amount: 2_000_000, label: "طلب از طرف حساب" })
+      );
+
+      // Deleting cash-1 should revert invoice paidAmount to 6M (check only)
+      const deleted = deleteTransactionAndRevert(edited.nextState, "cash-1");
+      expect(deleted.nextState.invoices.find(i => i.id === "s-1")?.paidAmount).toBe(6_000_000);
+      expect(partyBalanceDescriptor(deleted.nextState, "cust-1").amount).toBe(4_000_000);
     });
   });
 });
