@@ -118,6 +118,7 @@ export type PurchasePaymentMethod = "نقدی" | "چک مشتری" | "چک شر�
 export interface PurchasePayment {
   id: string;
   supplierId: string;
+  targetInvoiceId?: string;
   amount: number;
   feeAmount?: number;
   date: string;
@@ -1340,6 +1341,10 @@ export function normalizeState(input: unknown): AppState {
     purchasePayments: Array.isArray(source.purchasePayments)
       ? source.purchasePayments.map(payment => ({
           ...payment,
+          targetInvoiceId:
+            typeof payment.targetInvoiceId === "string" && payment.targetInvoiceId.trim()
+              ? payment.targetInvoiceId.trim()
+              : undefined,
           amount: Number(payment.amount) || 0,
           note: typeof payment.note === "string" ? payment.note : "",
         }))
@@ -3442,14 +3447,36 @@ export function settlePurchasePayablesFIFO(
 ) {
   const settlements: PurchasePayableSettlement[] = [];
   const openInvoices = invoices
-    .filter(invoice => invoice.type === "خرید" && invoice.status !== "باطل" && invoice.partyId)
+    .filter(invoice => invoice.type === "خرید" && invoice.status !== "باطل")
     .sort((a, b) => jalaliDateKey(a.date).localeCompare(jalaliDateKey(b.date)) || a.id.localeCompare(b.id));
   const openById = new Map(openInvoices.map(invoice => [invoice.id, Math.max(0, invoice.amount)]));
   const allocatedAt = new Date().toISOString();
   const sortedPayments = [...payments]
-    .filter(payment => payment.amount > FIFO_EPSILON && payment.supplierId)
+    .filter(payment => payment.amount > FIFO_EPSILON && (payment.supplierId || payment.targetInvoiceId))
     .sort((a, b) => jalaliDateKey(a.date).localeCompare(jalaliDateKey(b.date)) || a.id.localeCompare(b.id));
+
+  // Phase 1: Payments explicitly attached to a specific open purchase invoice
   for (const payment of sortedPayments) {
+    if (!payment.targetInvoiceId) continue;
+    const invoice = openInvoices.find(item => item.id === payment.targetInvoiceId);
+    if (!invoice) continue;
+    const invoiceRemaining = openById.get(invoice.id) || 0;
+    if (invoiceRemaining <= FIFO_EPSILON) continue;
+    const amount = Math.min(payment.amount, invoiceRemaining);
+    if (amount <= FIFO_EPSILON) continue;
+    settlements.push({
+      paymentId: payment.id,
+      invoiceId: invoice.id,
+      supplierId: payment.supplierId || invoice.partyId || "",
+      amount,
+      allocatedAt,
+    });
+    openById.set(invoice.id, Math.max(0, invoiceRemaining - amount));
+  }
+
+  // Phase 2: Unassigned supplier payments allocated FIFO across remaining open purchase invoices
+  for (const payment of sortedPayments) {
+    if (payment.targetInvoiceId || !payment.supplierId) continue;
     let remaining = payment.amount;
     for (const invoice of openInvoices) {
       if (invoice.partyId !== payment.supplierId || remaining <= FIFO_EPSILON) continue;
@@ -3472,6 +3499,164 @@ export function settlePurchasePayablesFIFO(
     }
   }
   return settlements;
+}
+
+export interface MutualOffsetLink {
+  counterInvoiceId: string;
+  counterInvoiceNumber: string;
+  counterInvoiceDate: string;
+  counterInvoiceType: "فروش" | "خرید";
+  amount: number;
+}
+
+export interface MutualInvoiceOffsetSummary {
+  offsetByInvoice: Map<string, number>;
+  linksByInvoice: Map<string, MutualOffsetLink[]>;
+  offsetByParty: Map<string, number>;
+}
+
+/**
+ * Dynamically pairs open sales invoices ("فروش") against open purchase invoices ("خرید")
+ * for the same party (تهاتر فاکتور فروش و خرید).
+ * Cash receipts and checks ALWAYS take priority first: once a check or cash receipt
+ * settles a sales invoice, its open remaining drops and the two invoices automatically
+ * separate so the purchase invoice becomes payable again.
+ */
+export function calculateMutualInvoiceOffsets(
+  state: AppState
+): MutualInvoiceOffsetSummary {
+  const offsetByInvoice = new Map<string, number>();
+  const linksByInvoice = new Map<string, MutualOffsetLink[]>();
+  const offsetByParty = new Map<string, number>();
+
+  const validInvoices = (state.invoices || []).filter(
+    inv => inv.status !== "باطل" && Boolean(inv.partyId)
+  );
+  if (!validInvoices.length) {
+    return { offsetByInvoice, linksByInvoice, offsetByParty };
+  }
+
+  const cashSalesByInvoice = getInvoiceCashPayments(
+    validInvoices,
+    state.transactions || []
+  );
+  const checkSettlements = settleChecksFIFO(
+    state.checks || [],
+    validInvoices,
+    state.paymentRules || [],
+    state.settings?.dayBasis || 30,
+    state.checkGroupAllocations || [],
+    state.transactions || []
+  );
+  const checkRowsByInvoice = new Map<string, FIFOSettlement[]>();
+  for (const row of checkSettlements) {
+    const list = checkRowsByInvoice.get(row.invoiceId) || [];
+    list.push(row);
+    checkRowsByInvoice.set(row.invoiceId, list);
+  }
+
+  const purchaseBreakdown = getPurchaseCashPaymentBreakdown(
+    validInvoices,
+    state.transactions || [],
+    state.purchasePayments || []
+  );
+
+  const partyIds = Array.from(
+    new Set(validInvoices.map(inv => inv.partyId!).filter(Boolean))
+  );
+
+  for (const partyId of partyIds) {
+    const openSales = validInvoices
+      .filter(inv => inv.partyId === partyId && inv.type === "فروش")
+      .sort(
+        (a, b) =>
+          jalaliDateKey(a.date).localeCompare(jalaliDateKey(b.date)) ||
+          a.id.localeCompare(b.id)
+      )
+      .map(inv => {
+        const cashPaid = cashSalesByInvoice.get(inv.id) || 0;
+        const checkPrincipal = principalCollectedForInvoice(
+          inv.amount,
+          checkRowsByInvoice.get(inv.id) || []
+        );
+        const settled = Math.min(inv.amount, cashPaid + checkPrincipal);
+        return {
+          invoice: inv,
+          remaining: Math.max(0, inv.amount - settled),
+        };
+      })
+      .filter(entry => entry.remaining > FIFO_EPSILON);
+
+    const openPurchases = validInvoices
+      .filter(inv => inv.partyId === partyId && inv.type === "خرید")
+      .sort(
+        (a, b) =>
+          jalaliDateKey(a.date).localeCompare(jalaliDateKey(b.date)) ||
+          a.id.localeCompare(b.id)
+      )
+      .map(inv => {
+        const paid = Math.min(
+          inv.amount,
+          purchaseBreakdown.paidByInvoice.get(inv.id) || 0
+        );
+        return {
+          invoice: inv,
+          remaining: Math.max(0, inv.amount - paid),
+        };
+      })
+      .filter(entry => entry.remaining > FIFO_EPSILON);
+
+    if (!openSales.length || !openPurchases.length) continue;
+
+    let saleIdx = 0;
+    let purchaseIdx = 0;
+    while (saleIdx < openSales.length && purchaseIdx < openPurchases.length) {
+      const s = openSales[saleIdx];
+      const p = openPurchases[purchaseIdx];
+      const offsetAmt = Math.min(s.remaining, p.remaining);
+      if (offsetAmt > FIFO_EPSILON) {
+        offsetByInvoice.set(
+          s.invoice.id,
+          (offsetByInvoice.get(s.invoice.id) || 0) + offsetAmt
+        );
+        offsetByInvoice.set(
+          p.invoice.id,
+          (offsetByInvoice.get(p.invoice.id) || 0) + offsetAmt
+        );
+        offsetByParty.set(
+          partyId,
+          (offsetByParty.get(partyId) || 0) + offsetAmt
+        );
+
+        const sLinks = linksByInvoice.get(s.invoice.id) || [];
+        sLinks.push({
+          counterInvoiceId: p.invoice.id,
+          counterInvoiceNumber: p.invoice.number,
+          counterInvoiceDate: p.invoice.date,
+          counterInvoiceType: p.invoice.type,
+          amount: offsetAmt,
+        });
+        linksByInvoice.set(s.invoice.id, sLinks);
+
+        const pLinks = linksByInvoice.get(p.invoice.id) || [];
+        pLinks.push({
+          counterInvoiceId: s.invoice.id,
+          counterInvoiceNumber: s.invoice.number,
+          counterInvoiceDate: s.invoice.date,
+          counterInvoiceType: s.invoice.type,
+          amount: offsetAmt,
+        });
+        linksByInvoice.set(p.invoice.id, pLinks);
+
+        s.remaining = Math.max(0, s.remaining - offsetAmt);
+        p.remaining = Math.max(0, p.remaining - offsetAmt);
+      }
+      if (s.remaining <= FIFO_EPSILON) saleIdx++;
+      if (p.remaining <= FIFO_EPSILON) purchaseIdx++;
+    }
+  }
+
+  return { offsetByInvoice, linksByInvoice, offsetByParty };
 }
 
 export interface PurchaseCashBreakdown {
@@ -3672,7 +3857,12 @@ export function purchaseSupplierBalance(state: AppState, supplierId: string) {
     )
     .reduce((sum, t) => sum + t.amount, 0);
   const payments = directPurchasePayments + txnPurchasePayments;
-  return { payable: Math.max(0, invoices - payments), credit: Math.max(0, payments - invoices) };
+  const mutualOffset = calculateMutualInvoiceOffsets(state).offsetByParty.get(supplierId) || 0;
+  const netInvoicesAfterOffset = Math.max(0, invoices - mutualOffset);
+  return {
+    payable: Math.max(0, netInvoicesAfterOffset - payments),
+    credit: Math.max(0, payments - netInvoicesAfterOffset),
+  };
 }
 
 export function refreshIssuedCheckStatuses(state: AppState, asOf = todayJalali()): AppState {

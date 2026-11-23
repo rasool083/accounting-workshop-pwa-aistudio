@@ -796,6 +796,7 @@ export function addCashPaymentToInvoice(
     note: payment.note?.trim() || defaultNote,
     trackingCode: payment.trackingCode?.trim(),
     targetInvoiceId: invoice.id,
+    targetInvoiceIds: [invoice.id],
   };
 
   const nextAccounts = applyAccountEffect(state.accounts, newTxn, 1);

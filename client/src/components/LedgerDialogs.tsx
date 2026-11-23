@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import {
   X,
   Printer,
@@ -42,6 +42,8 @@ import {
   personName,
   partyBalanceDescriptor,
   buildPartyLedgerStatement,
+  calculateMutualInvoiceOffsets,
+  FIFO_EPSILON,
   getInvoiceCashPaymentBreakdown,
   getPurchaseCashPaymentBreakdown,
   getTransactionTargetInvoiceIds,
@@ -1156,6 +1158,10 @@ export function PartyLedgerDialog({
   const totalDebits = statementRows.reduce((sum, r) => sum + r.debit, 0);
   const totalCredits = statementRows.reduce((sum, r) => sum + r.credit, 0);
   const balanceDesc = partyBalanceDescriptor(state, person.id);
+  const mutualOffsets = useMemo(
+    () => calculateMutualInvoiceOffsets(state),
+    [state]
+  );
 
   // Search filtered statement rows
   const filteredStatement = useMemo(() => {
@@ -1475,7 +1481,21 @@ export function PartyLedgerDialog({
               </thead>
               <tbody>
                 {personInvoices.length ? (
-                  personInvoices.map(inv => (
+                  personInvoices.map(inv => {
+                    const offsetAmt = inv.status === "باطل" ? 0 : (mutualOffsets.offsetByInvoice.get(inv.id) || 0);
+                    const effectivePaid = Math.min(inv.amount, (inv.paidAmount || 0) + offsetAmt);
+                    const effectiveRemaining = Math.max(0, inv.amount - effectivePaid);
+                    const effectiveStatus =
+                      inv.status === "باطل"
+                        ? "باطل"
+                        : effectiveRemaining <= FIFO_EPSILON
+                          ? offsetAmt > FIFO_EPSILON && (inv.paidAmount || 0) <= FIFO_EPSILON
+                            ? "تهاتر شده"
+                            : "تسویه شده"
+                          : effectivePaid > FIFO_EPSILON
+                            ? "تسویه جزئی"
+                            : "باز";
+                    return (
                     <tr
                       key={inv.id}
                       className="clickable-row"
@@ -1499,12 +1519,17 @@ export function PartyLedgerDialog({
                         <strong>{formatMoney(inv.amount, state.settings.currency)}</strong>
                       </td>
                       <td className="amount-cell">
-                        {formatMoney(inv.paidAmount || 0, state.settings.currency)}
+                        {formatMoney(effectivePaid, state.settings.currency)}
+                        {offsetAmt > FIFO_EPSILON && (
+                          <small className="table-subline" style={{ display: "block", color: "#0369a1" }}>
+                            شامل {formatMoney(offsetAmt, state.settings.currency)} تهاتر
+                          </small>
+                        )}
                       </td>
                       <td className="amount-cell">
                         <strong>
                           {formatMoney(
-                            Math.max(0, inv.amount - (inv.paidAmount || 0)),
+                            effectiveRemaining,
                             state.settings.currency
                           )}
                         </strong>
@@ -1512,16 +1537,17 @@ export function PartyLedgerDialog({
                       <td>
                         <span
                           className={`status-pill ${
-                            inv.status === "تسویه شده"
+                            effectiveStatus === "تسویه شده" || effectiveStatus === "تهاتر شده"
                               ? "status-success"
                               : "status-warning"
                           }`}
                         >
-                          {inv.status}
+                          {effectiveStatus}
                         </span>
                       </td>
                     </tr>
-                  ))
+                    );
+                  })
                 ) : (
                   <tr>
                     <td colSpan={7} style={{ textAlign: "center", padding: "24px 0" }}>
@@ -1772,6 +1798,9 @@ export function InvoiceDetailDialog({
   onOpenCheck?: (check: CheckType) => void;
 }) {
   const [currentInvoice, setCurrentInvoice] = useState<Invoice>(invoice);
+  useEffect(() => {
+    setCurrentInvoice(invoice);
+  }, [invoice]);
   const [inspectingPerson, setInspectingPerson] = useState<Person | null>(null);
   const [inspectingCheck, setInspectingCheck] = useState<CheckType | null>(null);
 
@@ -1863,9 +1892,19 @@ export function InvoiceDetailDialog({
     0
   );
 
+  const mutualOffsets = useMemo(
+    () => calculateMutualInvoiceOffsets(state),
+    [state]
+  );
+  const offsetAmt =
+    currentInvoice.status === "باطل"
+      ? 0
+      : mutualOffsets.offsetByInvoice.get(currentInvoice.id) || 0;
+  const offsetLinks = mutualOffsets.linksByInvoice.get(currentInvoice.id) || [];
+
   const remainingInvoiceBalance = Math.max(
     0,
-    currentInvoice.amount - (currentInvoice.paidAmount || 0)
+    currentInvoice.amount - Math.min(currentInvoice.amount, (currentInvoice.paidAmount || 0) + offsetAmt)
   );
 
   // Cash payment inline form state
@@ -2278,6 +2317,12 @@ export function InvoiceDetailDialog({
             >
               {formatMoney(remainingInvoiceBalance, state.settings.currency)}
             </div>
+            {offsetAmt > FIFO_EPSILON && (
+              <small style={{ color: "#1d4ed8", display: "block", marginTop: 2 }}>
+                شامل {formatMoney(offsetAmt, state.settings.currency)} تهاتر با فاکتور{" "}
+                {offsetLinks.map(l => l.counterInvoiceNumber).join("، ")}
+              </small>
+            )}
           </div>
         </div>
 

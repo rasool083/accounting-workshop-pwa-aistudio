@@ -89,6 +89,7 @@ import {
   partyBalanceDescriptor,
   buildPartyLedgerStatement,
   purchaseSupplierBalance,
+  calculateMutualInvoiceOffsets,
   getSettlementBalances,
   allocateCheckFIFO,
   rebuildCheckAllocations,
@@ -1735,6 +1736,14 @@ function Invoices({
       ),
     [state.invoices]
   );
+  const salesCashPaidByInvoice = useMemo(
+    () => getInvoiceCashPayments(state.invoices, state.transactions || []),
+    [state.invoices, state.transactions]
+  );
+  const mutualOffsets = useMemo(
+    () => calculateMutualInvoiceOffsets(state),
+    [state]
+  );
   const paidByInvoice = useMemo(() => {
     const result = new Map<string, number>();
     invoiceAllocations.forEach(item => {
@@ -1743,8 +1752,14 @@ function Invoices({
         (result.get(item.invoiceId) || 0) + item.principalAmount
       );
     });
+    validSales.forEach(inv => {
+      const cash = salesCashPaidByInvoice.get(inv.id) || 0;
+      const offset = mutualOffsets.offsetByInvoice.get(inv.id) || 0;
+      const checkPrincipal = result.get(inv.id) || 0;
+      result.set(inv.id, Math.min(inv.amount, checkPrincipal + cash + offset));
+    });
     return result;
-  }, [invoiceAllocations]);
+  }, [invoiceAllocations, validSales, salesCashPaidByInvoice, mutualOffsets]);
   const registeredSales = validSales.reduce(
     (sum, invoice) => sum + invoice.amount,
     0
@@ -1768,10 +1783,24 @@ function Invoices({
     return state.invoices.filter(invoice => {
       if (invoicePartyFilter !== "همه" && invoice.partyId !== invoicePartyFilter) return false;
       if (invoiceTypeFilter !== "همه" && invoice.type !== invoiceTypeFilter) return false;
-      if (invoiceStatusFilter !== "همه" && invoice.status !== invoiceStatusFilter) return false;
+      if (invoiceStatusFilter !== "همه") {
+        if (invoice.status === "باطل") {
+          return invoiceStatusFilter === "باطل";
+        }
+        const offsetAmt = mutualOffsets.offsetByInvoice.get(invoice.id) || 0;
+        const effectivePaid = Math.min(invoice.amount, (invoice.paidAmount || 0) + offsetAmt);
+        const effectiveRemaining = Math.max(0, invoice.amount - effectivePaid);
+        const effectiveStatus =
+          effectiveRemaining <= FIFO_EPSILON
+            ? "تسویه شده"
+            : effectivePaid > FIFO_EPSILON
+              ? "تسویه جزئی"
+              : "باز";
+        if (effectiveStatus !== invoiceStatusFilter) return false;
+      }
       return true;
     });
-  }, [state.invoices, invoicePartyFilter, invoiceTypeFilter, invoiceStatusFilter]);
+  }, [state.invoices, invoicePartyFilter, invoiceTypeFilter, invoiceStatusFilter, mutualOffsets]);
 
   const sortedInvoices = useMemo(
     () =>
@@ -1910,36 +1939,19 @@ function Invoices({
                 customerCheckId: payment.customerCheckId || "",
                 note: payment.note,
               }))
-          : (state.transactions || [])
-              .filter(t => {
+          : (() => {
+              const directSalesTxns = (state.transactions || []).filter(t => {
                 const targets = getTransactionTargetInvoiceIds(t);
                 return (
                   targets.length === 1 &&
                   targets[0] === invoice.id &&
                   t.status !== "باطل" &&
-                  (t.type === "دریافت" || t.type === "فروش")
+                  !isSyntheticCheckTransaction(t) &&
+                  (t.type === "دریافت" || t.type === "فروش" || t.type === "درآمد")
                 );
-              })
-              .map(t => ({
-                ...blankPayment,
-                method: "نقدی" as const,
-                amount: String(t.amount),
-                feeAmount: "",
-                accountId: t.accountId || "",
-                customerCheckId: "",
-                note: t.note,
-              })).length > 0
-              ? (state.transactions || [])
-                  .filter(t => {
-                    const targets = getTransactionTargetInvoiceIds(t);
-                    return (
-                      targets.length === 1 &&
-                      targets[0] === invoice.id &&
-                      t.status !== "باطل" &&
-                      (t.type === "دریافت" || t.type === "فروش")
-                    );
-                  })
-                  .map(t => ({
+              });
+              return directSalesTxns.length > 0
+                ? directSalesTxns.map(t => ({
                     ...blankPayment,
                     method: "نقدی" as const,
                     amount: String(t.amount),
@@ -1948,7 +1960,8 @@ function Invoices({
                     customerCheckId: "",
                     note: t.note,
                   }))
-              : [blankPayment],
+                : [blankPayment];
+            })(),
     });
     setSelectedInvoice(null);
     setOpen(true);
@@ -2110,15 +2123,13 @@ function Invoices({
       const applied = form.type === "خرید" ? newMovement : -newMovement;
       return { ...product, stock: product.stock + restored + applied };
     });
-    const payments = form.partyId
-      ? form.payments
-          .map(payment => ({
-            ...payment,
-            amount: parseLocalizedNumber(payment.amount) || 0,
-            feeAmount: Math.max(0, parseLocalizedNumber(payment.feeAmount) || 0),
-          }))
-          .filter(payment => payment.amount > 0)
-      : [];
+    const payments = form.payments
+      .map(payment => ({
+        ...payment,
+        amount: parseLocalizedNumber(payment.amount) || 0,
+        feeAmount: Math.max(0, parseLocalizedNumber(payment.feeAmount) || 0),
+      }))
+      .filter(payment => payment.amount > 0);
     const isPurchase = form.type === "خرید";
     const purchasePayments = isPurchase ? payments : [];
     const salesPayments = !isPurchase ? payments : [];
@@ -2126,6 +2137,7 @@ function Invoices({
     const purchasePaymentRecords = purchasePayments.map(payment => ({
       id: createId("purchase-payment"),
       supplierId: form.partyId,
+      targetInvoiceId: invoice.id,
       amount: payment.amount,
       feeAmount: payment.feeAmount,
       date: form.date,
@@ -2161,22 +2173,28 @@ function Invoices({
       )?.id,
     }));
 
-    // Handle sales cash/bank payments
+    // Handle sales cash/bank payments strictly attached to the current open invoice
     let currentAccounts = releasedState.accounts;
     let currentTransactions = releasedState.transactions || [];
 
+    const isDirectSalesCashTxn = (t: AppState["transactions"][number]) => {
+      const targets = getTransactionTargetInvoiceIds(t);
+      return (
+        targets.length === 1 &&
+        targets[0] === editingInvoice?.id &&
+        !isSyntheticCheckTransaction(t) &&
+        (t.type === "دریافت" || t.type === "فروش" || t.type === "درآمد")
+      );
+    };
+
     if (editingInvoice && editingInvoice.type === "فروش") {
-      const exclusiveTxns = currentTransactions.filter(t => {
-        const targets = getTransactionTargetInvoiceIds(t);
-        return targets.length === 1 && targets[0] === editingInvoice.id && t.status !== "باطل";
-      });
+      const exclusiveTxns = currentTransactions.filter(
+        t => isDirectSalesCashTxn(t) && t.status !== "باطل"
+      );
       for (const oldTx of exclusiveTxns) {
         currentAccounts = applyAccountEffect(currentAccounts, oldTx, -1);
       }
-      currentTransactions = currentTransactions.filter(t => {
-        const targets = getTransactionTargetInvoiceIds(t);
-        return !(targets.length === 1 && targets[0] === editingInvoice.id);
-      });
+      currentTransactions = currentTransactions.filter(t => !isDirectSalesCashTxn(t));
     }
 
     const partyObj = state.people.find(p => p.id === form.partyId);
@@ -2186,14 +2204,15 @@ function Invoices({
         id: createId("txn"),
         type: "دریافت" as const,
         date: form.date,
-        party: partyObj?.name || form.partyId,
-        partyId: form.partyId,
+        party: partyObj?.name || form.partyId || "مشتری نقدی",
+        partyId: form.partyId || undefined,
         accountId: accId,
         amount: payment.amount,
         category: "دریافت از مشتری",
         status: "ثبت شده" as const,
         note: payment.note?.trim() || `پرداخت نقدی فاکتور فروش شماره ${invoice.number}`,
         targetInvoiceId: invoice.id,
+        targetInvoiceIds: [invoice.id],
       };
     });
 
@@ -2271,11 +2290,18 @@ function Invoices({
         actionLabel="ثبت فاکتور"
         onAction={() => {
           setEditingInvoice(null);
-          setForm(current => ({
-            ...current,
+          setForm({
             number: nextInvoiceNumber,
+            type: "فروش",
             date: todayJalali(),
-          }));
+            partyId: "",
+            paymentRuleId: "",
+            priceHistoryId: "",
+            items: [blankItem],
+            discount: "",
+            note: "",
+            payments: [blankPayment],
+          });
           setOpen(true);
         }}
       />
@@ -2283,8 +2309,11 @@ function Invoices({
         <MetricCard
           label="فاکتورهای باز"
           value={formatNumber(
-            state.invoices.filter(invoice => invoice.status !== "تسویه شده")
-              .length
+            state.invoices.filter(invoice => {
+              if (invoice.status === "باطل") return false;
+              const offsetAmt = mutualOffsets.offsetByInvoice.get(invoice.id) || 0;
+              return invoice.amount - Math.min(invoice.amount, (invoice.paidAmount || 0) + offsetAmt) > FIFO_EPSILON;
+            }).length
           )}
           helper="اسناد دارای مانده"
           icon={<FileText size={20} />}
@@ -2339,7 +2368,11 @@ function Invoices({
             <span>تاریخ گزارش: {todayJalali()}</span>
             <span>تعداد فاکتورها: {formatNumber(displayInvoices.length)} فقره</span>
             <span>مجموع مبلغ فاکتورها: {formatMoney(displayInvoices.reduce((sum, inv) => sum + inv.amount, 0), state.settings.currency)}</span>
-            <span>مانده تسویه‌نشده: {formatMoney(displayInvoices.reduce((sum, inv) => sum + Math.max(0, inv.amount - (inv.paidAmount || 0)), 0), state.settings.currency)}</span>
+            <span>مانده تسویه‌نشده: {formatMoney(displayInvoices.reduce((sum, inv) => {
+              if (inv.status === "باطل") return sum;
+              const off = mutualOffsets.offsetByInvoice.get(inv.id) || 0;
+              return sum + Math.max(0, inv.amount - Math.min(inv.amount, (inv.paidAmount || 0) + off));
+            }, 0), state.settings.currency)}</span>
             {invoicePartyFilter !== "همه" && (() => {
               const openBal = calculatePersonUnsettledInvoiceBalance(state.invoices, invoicePartyFilter, state.checks);
               return (
@@ -2479,6 +2512,20 @@ function Invoices({
                     const invGroup = state.checkGroupAllocations?.find(
                       g => g.invoiceIds.includes(invoice.id)
                     );
+                    const offsetAmt = mutualOffsets.offsetByInvoice.get(invoice.id) || 0;
+                    const offsetLinks = mutualOffsets.linksByInvoice.get(invoice.id) || [];
+                    const effectivePaid = Math.min(invoice.amount, (invoice.paidAmount || 0) + offsetAmt);
+                    const effectiveRemaining = Math.max(0, invoice.amount - effectivePaid);
+                    const effectiveStatus =
+                      invoice.status === "باطل"
+                        ? "باطل"
+                        : effectiveRemaining <= FIFO_EPSILON
+                          ? offsetAmt > FIFO_EPSILON && (invoice.paidAmount || 0) <= FIFO_EPSILON
+                            ? "تهاتر شده"
+                            : "تسویه شده"
+                          : effectivePaid > FIFO_EPSILON
+                            ? "تسویه جزئی"
+                            : "باز";
                     return (
                       <Fragment key={invoice.id}>
                         <tr
@@ -2591,11 +2638,15 @@ function Invoices({
                             <small className="table-subline">{invoice.type === "فروش" ? "طلب ایجادشده" : "بدهی ایجادشده"}</small>
                           </td>
                           <td>
-                            <strong>{formatMoney(invoice.paidAmount, state.settings.currency)}</strong>
-                            <small className="table-subline">{invoice.type === "فروش" ? "وصول" : "پرداخت"}</small>
+                            <strong>{formatMoney(effectivePaid, state.settings.currency)}</strong>
+                            <small className="table-subline">
+                              {offsetAmt > FIFO_EPSILON
+                                ? `شامل ${formatMoney(offsetAmt, state.settings.currency)} تهاتر`
+                                : invoice.type === "فروش" ? "وصول" : "پرداخت"}
+                            </small>
                           </td>
                           <td className="amount-cell">
-                            <strong>{formatMoney(Math.max(0, invoice.amount - invoice.paidAmount), state.settings.currency)}</strong>
+                            <strong>{formatMoney(effectiveRemaining, state.settings.currency)}</strong>
                             <small className="table-subline">{invoiceBalanceLabel(invoice.type)}</small>
                           </td>
                           <td>
@@ -2606,9 +2657,9 @@ function Invoices({
                               جزئیات
                             </button>{" "}
                             <span
-                              className={`status-pill ${invoice.status === "تسویه شده" ? "status-success" : invoice.status === "باطل" ? "status-danger" : "status-warning"}`}
+                              className={`status-pill ${effectiveStatus === "تسویه شده" || effectiveStatus === "تهاتر شده" ? "status-success" : effectiveStatus === "باطل" ? "status-danger" : "status-warning"}`}
                             >
-                              {invoice.status}
+                              {effectiveStatus}
                             </span>
                             {invoice.status !== "باطل" && (
                               <button
@@ -2677,15 +2728,30 @@ function Invoices({
                                           <strong>مبلغ فاکتور:</strong> {formatMoney(invoice.amount, state.settings.currency)}
                                         </div>
                                         <div>
-                                          <strong>تسویه‌شده:</strong> {formatMoney(invoice.paidAmount || 0, state.settings.currency)}
+                                          <strong>تسویه‌شده:</strong> {formatMoney(effectivePaid, state.settings.currency)}
                                         </div>
                                         <div>
-                                          <strong>مانده تسویه‌نشده:</strong> {formatMoney(Math.max(0, invoice.amount - (invoice.paidAmount || 0)), state.settings.currency)}
+                                          <strong>مانده تسویه‌نشده:</strong> {formatMoney(effectiveRemaining, state.settings.currency)}
                                         </div>
                                         <div>
-                                          <strong>وضعیت تسویه:</strong> {invoice.status}
+                                          <strong>وضعیت تسویه:</strong> {effectiveStatus}
                                         </div>
                                       </div>
+
+                                      {offsetLinks.length > 0 && (
+                                        <div style={{ marginBottom: 10, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 8, padding: "8px 12px", fontSize: "0.8rem", color: "#1e40af" }}>
+                                          <strong>تهاتر خودکار با فاکتور مقابل ({formatMoney(offsetAmt, state.settings.currency)}):</strong>{" "}
+                                          {offsetLinks.map((link, idx) => (
+                                            <span key={`${link.counterInvoiceId}-${idx}`}>
+                                              {idx > 0 ? " · " : ""}
+                                              فاکتور {link.counterInvoiceType} {link.counterInvoiceNumber} ({formatMoney(link.amount, state.settings.currency)})
+                                            </span>
+                                          ))}
+                                          <small style={{ display: "block", color: "#3b82f6", marginTop: 2 }}>
+                                            با ثبت چک یا دریافت نقدی برای فاکتور فروش، این دو فاکتور به‌صورت خودکار از هم جدا می‌شوند.
+                                          </small>
+                                        </div>
+                                      )}
 
                                       {invoice.items && invoice.items.length > 0 && (
                                         <div className="invoice-items-mini-table">
@@ -2955,7 +3021,10 @@ function Invoices({
               ? `ویرایش فاکتور ${editingInvoice.number}`
               : "ثبت فاکتور چندردیفی"
           }
-          onClose={() => setOpen(false)}
+          onClose={() => {
+            setOpen(false);
+            setEditingInvoice(null);
+          }}
         >
           <form onSubmit={submit} className="form-grid">
             <label>
@@ -9149,6 +9218,7 @@ function MonthClose({
     partyInvoices,
     state.transactions || []
   );
+  const mutualOffsets = calculateMutualInvoiceOffsets(state);
   const allValidSalesTotal = state.invoices
     .filter(invoice => invoice.type === "فروش" && invoice.status !== "باطل")
     .reduce((sum, invoice) => sum + invoice.amount, 0);
@@ -9201,6 +9271,7 @@ function MonthClose({
       invoice.discountAmount || Math.max(0, gross - invoice.amount);
     const base = invoice.amount;
     const cashPaid = cashPaidByInvoice.get(invoice.id) || 0;
+    const offsetAmount = mutualOffsets.offsetByInvoice.get(invoice.id) || 0;
 
     const invoiceSettlements = fifoSettlements.filter(
       item => item.invoiceId === invoice.id
@@ -9218,7 +9289,7 @@ function MonthClose({
       0
     );
 
-    const principalSettled = Math.min(base, cashPaid + checkPrincipal);
+    const principalSettled = Math.min(base, cashPaid + checkPrincipal + offsetAmount);
     const baseRemaining = Math.max(0, base - principalSettled);
 
     let lateProfit = 0;
@@ -9847,10 +9918,17 @@ function Reports({
         ledgerMode === "account"
           ? item.toAccountId === ledgerAccountId ||
             ["دریافت", "درآمد", "فروش کالا"].includes(item.type)
-          : item.partnerEffect === "افزایش طلب شریک" ||
-            item.partnerEffect === "کاهش طلب کارگاه از شریک" ||
-            item.type === "خرید" ||
-            item.type === "هزینه/خرید توسط شریک";
+          : item.partnerEffect
+            ? item.partnerEffect === "افزایش طلب کارگاه از شریک" ||
+              item.partnerEffect === "کاهش طلب شریک"
+            : [
+                "پرداخت",
+                "هزینه",
+                "خرید",
+                "هزینه/خرید توسط شریک",
+                "مساعده/پرداخت به شریک",
+                "پرداخت حقوق",
+              ].includes(item.type);
       rows.push({
         id: item.id,
         date: item.date,
@@ -10023,6 +10101,10 @@ function Reports({
     };
     return { months: aggregate("month"), years: aggregate("year") };
   }, [collectionProfitRows]);
+  const mutualOffsetsReport = useMemo(
+    () => calculateMutualInvoiceOffsets(state),
+    [state]
+  );
   const agingReport = useMemo(() => {
     const buckets = [
       { key: "0-30", label: "۰ تا ۳۰ روز" },
@@ -10039,9 +10121,10 @@ function Reports({
     state.invoices
       .filter(invoice => invoice.status !== "باطل")
       .forEach(invoice => {
+        const offsetAmt = mutualOffsetsReport.offsetByInvoice.get(invoice.id) || 0;
         const outstanding = Math.max(
           0,
-          invoice.amount - (invoice.paidAmount || 0)
+          invoice.amount - Math.min(invoice.amount, (invoice.paidAmount || 0) + offsetAmt)
         );
         if (!outstanding) return;
         const age = jalaliDayDifference(invoice.date, todayJalali());
@@ -10051,7 +10134,7 @@ function Reports({
         else summary[index].payable += outstanding;
       });
     return summary;
-  }, [state]);
+  }, [state, mutualOffsetsReport]);
   const [statementPartyId, setStatementPartyId] = useState("");
   const statementRows = useMemo(() => {
     if (!statementPartyId) return [];
@@ -12981,47 +13064,81 @@ function QuickAdd({
                   background: "#f8fafc",
                 }}
               >
-                {candidateInvoices.map(inv => {
-                  const rem = Math.max(0, inv.amount - (inv.paidAmount || 0));
-                  const checked = form.targetInvoiceIds.includes(inv.id);
-                  return (
-                    <label
-                      key={inv.id}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        gap: 8,
-                        padding: "6px 10px",
-                        borderRadius: 8,
-                        background: checked ? "#ecfdf5" : "#ffffff",
-                        border: checked ? "1px solid #10b981" : "1px solid #e2e8f0",
-                        cursor: "pointer",
-                        fontSize: "0.82rem",
-                      }}
-                    >
-                      <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => toggleTargetInvoice(inv.id)}
-                        />
-                        <strong>
-                          فاکتور {inv.type} شماره {inv.number}
-                        </strong>
-                        <small className="muted-cell">{formatDate(inv.date)}</small>
-                      </span>
-                      <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        <small className="muted-cell">
-                          کل: {formatMoney(inv.amount, currency)}
-                        </small>
-                        <strong style={{ color: "#b45309" }}>
-                          مانده: {formatMoney(rem, currency)}
-                        </strong>
-                      </span>
-                    </label>
-                  );
-                })}
+                {(() => {
+                  const quickOffsetMap = new Map<string, number>();
+                  const openSales = candidateInvoices
+                    .filter(inv => inv.type === "فروش")
+                    .sort((a, b) => jalaliDateKey(a.date).localeCompare(jalaliDateKey(b.date)) || a.id.localeCompare(b.id))
+                    .map(inv => ({ id: inv.id, rem: Math.max(0, inv.amount - (inv.paidAmount || 0)) }))
+                    .filter(item => item.rem > FIFO_EPSILON);
+                  const openPurchases = candidateInvoices
+                    .filter(inv => inv.type === "خرید")
+                    .sort((a, b) => jalaliDateKey(a.date).localeCompare(jalaliDateKey(b.date)) || a.id.localeCompare(b.id))
+                    .map(inv => ({ id: inv.id, rem: Math.max(0, inv.amount - (inv.paidAmount || 0)) }))
+                    .filter(item => item.rem > FIFO_EPSILON);
+                  let sIdx = 0;
+                  let pIdx = 0;
+                  while (sIdx < openSales.length && pIdx < openPurchases.length) {
+                    const s = openSales[sIdx];
+                    const p = openPurchases[pIdx];
+                    const amt = Math.min(s.rem, p.rem);
+                    if (amt > FIFO_EPSILON) {
+                      quickOffsetMap.set(s.id, (quickOffsetMap.get(s.id) || 0) + amt);
+                      quickOffsetMap.set(p.id, (quickOffsetMap.get(p.id) || 0) + amt);
+                      s.rem -= amt;
+                      p.rem -= amt;
+                    }
+                    if (s.rem <= FIFO_EPSILON) sIdx++;
+                    if (p.rem <= FIFO_EPSILON) pIdx++;
+                  }
+                  return candidateInvoices.map(inv => {
+                    const rem = Math.max(0, inv.amount - (inv.paidAmount || 0));
+                    const offsetAmt = quickOffsetMap.get(inv.id) || 0;
+                    const checked = form.targetInvoiceIds.includes(inv.id);
+                    return (
+                      <label
+                        key={inv.id}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 8,
+                          padding: "6px 10px",
+                          borderRadius: 8,
+                          background: checked ? "#ecfdf5" : "#ffffff",
+                          border: checked ? "1px solid #10b981" : "1px solid #e2e8f0",
+                          cursor: "pointer",
+                          fontSize: "0.82rem",
+                        }}
+                      >
+                        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleTargetInvoice(inv.id)}
+                          />
+                          <strong>
+                            فاکتور {inv.type} شماره {inv.number}
+                          </strong>
+                          <small className="muted-cell">{formatDate(inv.date)}</small>
+                          {offsetAmt > FIFO_EPSILON && (
+                            <span className="soft-tag" style={{ background: "#eff6ff", color: "#1d4ed8", fontSize: "0.72rem" }}>
+                              دارای تهاتر {formatMoney(offsetAmt, currency)}
+                            </span>
+                          )}
+                        </span>
+                        <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <small className="muted-cell">
+                            کل: {formatMoney(inv.amount, currency)}
+                          </small>
+                          <strong style={{ color: "#b45309" }}>
+                            مانده: {formatMoney(rem, currency)}
+                          </strong>
+                        </span>
+                      </label>
+                    );
+                  });
+                })()}
               </div>
             ) : (
               <div

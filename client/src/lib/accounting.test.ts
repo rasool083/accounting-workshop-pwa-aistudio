@@ -43,6 +43,7 @@ import {
   partyBalanceDescriptor,
   buildPartyLedgerStatement,
   purchaseSupplierBalance,
+  calculateMutualInvoiceOffsets,
 } from "./accounting";
 import {
   addCashPaymentToInvoice,
@@ -2317,6 +2318,227 @@ describe("invoice with cash payment and check combination", () => {
       const deleted = deleteTransactionAndRevert(edited.nextState, "cash-1");
       expect(deleted.nextState.invoices.find(i => i.id === "s-1")?.paidAmount).toBe(6_000_000);
       expect(partyBalanceDescriptor(deleted.nextState, "cust-1").amount).toBe(4_000_000);
+    });
+
+    it("allocates cash payment entered for current open invoice strictly to that invoice (not FIFO) and purchase payment targetInvoiceId directly", () => {
+      const state = normalizeState({
+        people: [
+          {
+            id: "cust-direct",
+            code: "401",
+            name: "مشتری پرداخت مستقیم",
+            type: "مشتری",
+            roles: ["مشتری", "تأمین‌کننده"],
+            phone: "",
+            balance: 0,
+          },
+        ],
+        accounts: [{ id: "cash-box", name: "صندوق", type: "صندوق", balance: 0 }],
+        invoices: [
+          {
+            id: "sale-old",
+            number: "S-1",
+            type: "فروش",
+            date: "1405/01/01",
+            partyId: "cust-direct",
+            items: [],
+            allocations: [],
+            amount: 10_000_000,
+            paidAmount: 0,
+            status: "باز",
+            note: "",
+          },
+          {
+            id: "sale-current",
+            number: "S-2",
+            type: "فروش",
+            date: "1405/01/10",
+            partyId: "cust-direct",
+            items: [],
+            allocations: [],
+            amount: 7_000_000,
+            paidAmount: 0,
+            status: "باز",
+            note: "",
+          },
+          {
+            id: "buy-old",
+            number: "P-1",
+            type: "خرید",
+            date: "1405/01/01",
+            partyId: "cust-direct",
+            items: [],
+            allocations: [],
+            amount: 8_000_000,
+            paidAmount: 0,
+            status: "باز",
+            note: "",
+          },
+          {
+            id: "buy-current",
+            number: "P-2",
+            type: "خرید",
+            date: "1405/01/12",
+            partyId: "cust-direct",
+            items: [],
+            allocations: [],
+            amount: 5_000_000,
+            paidAmount: 0,
+            status: "باز",
+            note: "",
+          },
+        ],
+        purchasePayments: [
+          {
+            id: "pp-direct-p2",
+            supplierId: "cust-direct",
+            targetInvoiceId: "buy-current",
+            amount: 5_000_000,
+            date: "1405/01/12",
+            method: "نقدی",
+            accountId: "cash-box",
+            note: "پرداخت مستقیم فاکتور خرید فعلی",
+          },
+        ],
+      });
+
+      const paidSalesRes = addCashPaymentToInvoice(state, "sale-current", {
+        amount: 7_000_000,
+        accountId: "cash-box",
+        date: "1405/01/10",
+      });
+      const rebuilt = rebuildPurchasePayables(rebuildCheckAllocations(paidSalesRes.nextState));
+
+      // Newer sale-current is settled 100%, older sale-old remains untouched/open!
+      expect(rebuilt.invoices.find(i => i.id === "sale-current")?.paidAmount).toBe(7_000_000);
+      expect(rebuilt.invoices.find(i => i.id === "sale-current")?.status).toBe("تسویه شده");
+      expect(rebuilt.invoices.find(i => i.id === "sale-old")?.paidAmount).toBe(0);
+      expect(rebuilt.invoices.find(i => i.id === "sale-old")?.status).toBe("باز");
+
+      // Newer buy-current is settled 100% by direct targetInvoiceId PurchasePayment, older buy-old remains open!
+      expect(rebuilt.invoices.find(i => i.id === "buy-current")?.paidAmount).toBe(5_000_000);
+      expect(rebuilt.invoices.find(i => i.id === "buy-current")?.status).toBe("تسویه شده");
+      expect(rebuilt.invoices.find(i => i.id === "buy-old")?.paidAmount).toBe(0);
+      expect(rebuilt.invoices.find(i => i.id === "buy-old")?.status).toBe("باز");
+    });
+
+    it("mutually offsets open sale and purchase invoices of same party and automatically separates them when a check or cash receipt arrives", () => {
+      const baseState = rebuildPurchasePayables(
+        rebuildCheckAllocations(
+          normalizeState({
+            people: [
+              {
+                id: "dual-1",
+                code: "501",
+                name: "تأمین‌کننده و مشتری هم‌زمان",
+                type: "مشتری",
+                roles: ["مشتری", "تأمین‌کننده"],
+                phone: "",
+                balance: 0,
+              },
+            ],
+            accounts: [{ id: "bank-1", name: "بانک ملی", type: "بانک", balance: 0 }],
+            invoices: [
+              {
+                id: "sale-1",
+                number: "F-100",
+                type: "فروش",
+                date: "1405/02/01",
+                partyId: "dual-1",
+                items: [],
+                allocations: [],
+                amount: 10_000_000,
+                paidAmount: 0,
+                status: "باز",
+                note: "",
+              },
+              {
+                id: "buy-1",
+                number: "K-200",
+                type: "خرید",
+                date: "1405/02/02",
+                partyId: "dual-1",
+                items: [],
+                allocations: [],
+                amount: 10_000_000,
+                paidAmount: 0,
+                status: "باز",
+                note: "",
+              },
+            ],
+          })
+        )
+      );
+
+      // 1. Both invoices offset each other (10M vs 10M -> net 0)
+      const initialOffsets = calculateMutualInvoiceOffsets(baseState);
+      expect(initialOffsets.offsetByInvoice.get("sale-1")).toBe(10_000_000);
+      expect(initialOffsets.offsetByInvoice.get("buy-1")).toBe(10_000_000);
+      expect(initialOffsets.offsetByParty.get("dual-1")).toBe(10_000_000);
+      expect(partyBalanceDescriptor(baseState, "dual-1").amount).toBe(0);
+      expect(purchaseSupplierBalance(baseState, "dual-1")).toEqual({ payable: 0, credit: 0 });
+
+      // 2. Customer gives a check for 10M -> check settles sale-1 FIRST, separating sale-1 & buy-1!
+      const withCheck = rebuildPurchasePayables(
+        rebuildCheckAllocations({
+          ...baseState,
+          checks: [
+            {
+              id: "chk-sep",
+              number: "778899",
+              partyId: "dual-1",
+              dueDate: "1405/02/20",
+              receivedDate: "1405/02/05",
+              amount: 10_000_000,
+              status: "نزد ما",
+              bank: "ملی",
+            },
+          ],
+        })
+      );
+
+      const separatedByCheckOffsets = calculateMutualInvoiceOffsets(withCheck);
+      expect(separatedByCheckOffsets.offsetByInvoice.get("sale-1") || 0).toBe(0);
+      expect(separatedByCheckOffsets.offsetByInvoice.get("buy-1") || 0).toBe(0);
+      expect(withCheck.invoices.find(i => i.id === "sale-1")?.paidAmount).toBe(10_000_000);
+      expect(purchaseSupplierBalance(withCheck, "dual-1")).toEqual({
+        payable: 10_000_000,
+        credit: 0,
+      });
+      expect(partyBalanceDescriptor(withCheck, "dual-1")).toEqual(
+        expect.objectContaining({
+          amount: 10_000_000,
+          label: "بدهی به طرف حساب",
+        })
+      );
+
+      // 3. If that check is returned/voided ("عودت داده شده"), both invoices automatically re-offset back to 10M / 0 net!
+      const returnedCheck = rebuildPurchasePayables(
+        rebuildCheckAllocations({
+          ...withCheck,
+          checks: withCheck.checks.map(c =>
+            c.id === "chk-sep" ? { ...c, status: "عودت داده شده" as const } : c
+          ),
+        })
+      );
+      const reOffset = calculateMutualInvoiceOffsets(returnedCheck);
+      expect(reOffset.offsetByParty.get("dual-1")).toBe(10_000_000);
+      expect(purchaseSupplierBalance(returnedCheck, "dual-1")).toEqual({ payable: 0, credit: 0 });
+      expect(partyBalanceDescriptor(returnedCheck, "dual-1").amount).toBe(0);
+
+      // 4. Similarly, if cash is received directly for sale-1, they separate and buy-1 becomes payable again
+      const withCash = addCashPaymentToInvoice(baseState, "sale-1", {
+        amount: 10_000_000,
+        accountId: "bank-1",
+        date: "1405/02/06",
+      }).nextState;
+      const separatedByCashOffsets = calculateMutualInvoiceOffsets(withCash);
+      expect(separatedByCashOffsets.offsetByParty.get("dual-1") || 0).toBe(0);
+      expect(withCash.invoices.find(i => i.id === "sale-1")?.paidAmount).toBe(10_000_000);
+      expect(purchaseSupplierBalance(withCash, "dual-1")).toEqual({
+        payable: 10_000_000,
+        credit: 0,
+      });
     });
   });
 });
